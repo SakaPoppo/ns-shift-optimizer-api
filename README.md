@@ -44,7 +44,7 @@ Cloud Run
 
 ## Current Status
 
-現在はAPI基盤の実装段階です。
+現在は、API基盤とDjango非依存のOR-Tools最適化器まで実装済みです。
 
 実装済み：
 
@@ -52,12 +52,14 @@ Cloud Run
 * `GET /health`
 * `POST /generate`
 * PydanticによるNs Shift payloadのvalidation
+* `GenerateShiftRequest` から `OptimizationContext` への変換
+* OR-Toolsによる内部シフト最適化
 * APIテスト
 
 未実装：
 
-* OR-Toolsによるシフト生成
 * 生成結果JSONの返却
+* `/generate` から最適化器を呼び出す処理
 * Ns Shiftからの実際のHTTP通信
 * Cloud Runへのデプロイ
 
@@ -69,10 +71,14 @@ Cloud Run
 .
 ├── app/
 │   ├── __init__.py
+│   ├── constants.py
+│   ├── context.py
 │   ├── main.py
+│   ├── optimization.py
 │   ├── schemas.py
 │   └── types.py
 ├── tests/
+│   ├── test_context_and_optimization.py
 │   └── test_main.py
 ├── Dockerfile
 ├── requirements.txt
@@ -135,7 +141,7 @@ http://localhost:8080/docs
 
 Ns Shiftのシフト生成用payloadを受け取るエンドポイントです。
 
-現在はOR-Toolsによる生成処理はまだ実装しておらず、payloadのvalidationのみ行います。
+現在のHTTP endpointはpayloadのvalidationのみを行います。OR-Tools最適化器はAPI内部で利用でき、次の実装でHTTP endpointから呼び出して結果JSONへ変換します。
 
 正常なpayloadを送信すると、例えば以下を返します。
 
@@ -166,7 +172,7 @@ docker run --rm \
 
 ## Next Step
 
-次の実装では、Ns Shift本体のOR-Tools生成処理を参考にしながら、このAPI内にDjango非依存のシフト最適化処理を実装します。
+次の実装では、最適化結果をHTTPレスポンス用JSONへ変換し、`/generate` から最適化器を呼び出します。
 
 最終的には、
 
