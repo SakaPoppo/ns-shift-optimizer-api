@@ -5,6 +5,8 @@ from app.constants import (
     SHIFT_DAY,
     SHIFT_NIGHT,
     SHIFT_OFF,
+    SHIFT_PAID_LEAVE,
+    SHIFT_SPECIAL_LEAVE,
 )
 from app.context import build_optimization_context
 from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES, optimize_shift
@@ -141,6 +143,29 @@ def test_optimize_shift_preserves_fixed_night_assignment() -> None:
     assert selected_shift_type(output, staff_id=1, target_date=first_date) == SHIFT_NIGHT
     assert selected_shift_type(output, staff_id=1, target_date=second_date) == SHIFT_AFTER_NIGHT
     assert selected_shift_type(output, staff_id=1, target_date=third_date) == SHIFT_OFF
+
+
+def test_optimize_shift_excludes_paid_and_special_leave_from_monthly_off_days() -> None:
+    context = build_optimization_context(
+        make_request(
+            days=4,
+            staff_members=[staff(staff_id=1)],
+            off_days=1,
+            max_consecutive_work_days=5,
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_PAID_LEAVE},
+                {"staff_id": 1, "date": "2026-09-02", "shift_type": SHIFT_SPECIAL_LEAVE},
+            ],
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert output.solver_status in SUCCESSFUL_OPTIMIZATION_STATUSES
+    assert sum(
+        selected_shift_type(output, staff_id=1, target_date=target_date) == SHIFT_OFF
+        for target_date in context.month_dates[2:]
+    ) == 1
 
 
 def test_night_ineligible_staff_is_never_assigned_night() -> None:

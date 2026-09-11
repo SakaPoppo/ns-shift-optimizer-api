@@ -18,6 +18,7 @@ from ortools.sat.python import cp_model
 
 from .constants import (
     GENERATABLE_SHIFT_TYPES,
+    FIXED_NON_GENERATED_MONTHLY_OFF_SHIFT_TYPES,
     OFF_LIKE_SHIFT_TYPES,
     ROLE_LEADER,
     SHIFT_AFTER_NIGHT,
@@ -25,8 +26,6 @@ from .constants import (
     SHIFT_NIGHT,
     SHIFT_OFF,
     SHIFT_OFF_REQUEST,
-    SHIFT_PAID_LEAVE,
-    SHIFT_SPECIAL_LEAVE,
     SHIFT_TRAINING,
     WORKLIKE_SHIFT_TYPES,
 )
@@ -678,11 +677,7 @@ def _add_monthly_off_day_constraints(
             1
             for target_date in month_dates
             if fixed_assignments.get((staff_member.id, target_date))
-            in {
-                SHIFT_OFF_REQUEST,
-                SHIFT_PAID_LEAVE,
-                SHIFT_SPECIAL_LEAVE,
-            }
+            in FIXED_NON_GENERATED_MONTHLY_OFF_SHIFT_TYPES
         )
         model.Add(
             sum(
@@ -1191,4 +1186,3 @@ def _build_solver_error_message(solver_status):
     if solver_status == "UNKNOWN":
         return "制限時間内に解を見つけられませんでした。条件を見直して再実行してください。"
     return f"シフトを自動生成できませんでした。（solver_status={solver_status}）"
-
