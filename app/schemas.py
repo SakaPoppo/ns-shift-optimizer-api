@@ -79,7 +79,25 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class GeneratedShiftOutput(BaseModel):
+    """One staff member's resolved shift for one target date."""
+
+    staff_id: int
+    date: date
+    shift_type: str
+
+
+class OptimizationPhaseOutput(BaseModel):
+    """A JSON-safe summary of one optimization phase."""
+
+    name: str
+    status: str
+    objective_value: int | None
+    optimal: bool
+
+
 class GenerateShiftResponse(BaseModel):
     status: str
-    staff_count: int
-    target_day_count: int
+    solver_status: str
+    shifts: list[GeneratedShiftOutput]
+    phase_results: list[OptimizationPhaseOutput]

@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 
+import pytest
+
 from app.constants import (
     SHIFT_AFTER_NIGHT,
     SHIFT_DAY,
@@ -11,6 +13,7 @@ from app.constants import (
 from app.context import build_optimization_context
 from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES, optimize_shift
 from app.schemas import GenerateShiftRequest
+from app.types import OptimizationError
 
 
 def make_request(
@@ -190,23 +193,34 @@ def test_night_ineligible_staff_is_never_assigned_night() -> None:
 def test_previous_consecutive_work_days_limit_month_start_work() -> None:
     context = build_optimization_context(
         make_request(
-            days=2,
+            days=1,
             staff_members=[staff(staff_id=1)],
             off_days=1,
             max_consecutive_work_days=5,
             previous_consecutive_work_days=[
-                {"staff_id": 1, "previous_consecutive_work_days": 4}
+                {"staff_id": 1, "previous_consecutive_work_days": 5}
             ],
         )
     )
 
     output = optimize_shift(context)
-    assigned_shifts = [
-        selected_shift_type(output, staff_id=1, target_date=target_date)
-        for target_date in context.month_dates
-    ]
 
-    assert sum(shift_type == SHIFT_DAY for shift_type in assigned_shifts) <= 1
+    assert selected_shift_type(
+        output,
+        staff_id=1,
+        target_date=context.month_dates[0],
+    ) == SHIFT_OFF
+
+
+def test_context_rejects_inconsistent_max_consecutive_work_days() -> None:
+    request = make_request(days=2, staff_members=[staff(staff_id=1)])
+    inconsistent_payload = request.model_dump(mode="json")
+    inconsistent_payload["effective_rules"][1]["max_consecutive_work_days"] = 4
+
+    with pytest.raises(OptimizationError, match="max_consecutive_work_days"):
+        build_optimization_context(
+            GenerateShiftRequest.model_validate(inconsistent_payload)
+        )
 
 
 def test_user_override_work_streak_is_preserved_then_forces_generated_off() -> None:
