@@ -1,12 +1,16 @@
 """FastAPI entry point for the Ns Shift optimizer service."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
+from .context import build_optimization_context
+from .optimization import optimize_shift
+from .results import build_generate_shift_response
 from .schemas import (
     GenerateShiftRequest,
     GenerateShiftResponse,
     HealthResponse,
 )
+from .types import OptimizationError
 
 
 app = FastAPI(
@@ -25,10 +29,14 @@ def health() -> HealthResponse:
 
 @app.post("/generate", response_model=GenerateShiftResponse)
 def generate_shift(payload: GenerateShiftRequest) -> GenerateShiftResponse:
-    """Validate an Ns Shift payload until OR-Tools generation is introduced."""
+    """Generate a shift plan and return only JSON-serializable result data."""
 
-    return GenerateShiftResponse(
-        status="received",
-        staff_count=len(payload.staff_members),
-        target_day_count=len(payload.month_dates),
-    )
+    try:
+        context = build_optimization_context(payload)
+        optimization = optimize_shift(context)
+        return build_generate_shift_response(
+            context=context,
+            optimization=optimization,
+        )
+    except OptimizationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error

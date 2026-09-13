@@ -44,7 +44,7 @@ Cloud Run
 
 ## Current Status
 
-現在は、API基盤とDjango非依存のOR-Tools最適化器まで実装済みです。
+現在は、Django非依存のOR-Tools最適化器をHTTP APIから実行し、生成結果をJSONで返却できます。
 
 実装済み：
 
@@ -54,16 +54,17 @@ Cloud Run
 * PydanticによるNs Shift payloadのvalidation
 * `GenerateShiftRequest` から `OptimizationContext` への変換
 * OR-Toolsによる内部シフト最適化
+* `/generate` からOR-Tools最適化を実行
+* 生成結果・最適化フェーズ結果のJSON返却
+* 入力payloadのフィールド間整合性検証
 * APIテスト
 
 未実装：
 
-* 生成結果JSONの返却
-* `/generate` から最適化器を呼び出す処理
 * Ns Shiftからの実際のHTTP通信
 * Cloud Runへのデプロイ
 
-現在の `/generate` は受信したpayloadを検証し、スタッフ数と対象日数のみ返します。
+`/generate` はpayloadを検証した後にOR-Toolsを実行し、全スタッフ・全対象日について1件ずつ勤務結果を返します。固定の希望休・有給・特別休・研修もレスポンスに含まれます。
 
 ## Project Structure
 
@@ -75,6 +76,7 @@ Cloud Run
 │   ├── context.py
 │   ├── main.py
 │   ├── optimization.py
+│   ├── results.py
 │   ├── schemas.py
 │   └── types.py
 ├── tests/
@@ -95,7 +97,11 @@ FastAPIのエントリーポイントです。
 
 ### `app/schemas.py`
 
-Ns Shiftから送信されるJSONの構造をPydanticモデルとして定義します。
+Ns Shiftから受信するJSONと、APIが返すJSONのPydanticモデルを定義します。
+
+### `app/results.py`
+
+OR-Toolsのsolver・変数・tuple keyを含む内部結果を、JSON安全なレスポンスモデルへ変換します。
 
 ### `app/types.py`
 
@@ -139,19 +145,33 @@ http://localhost:8080/docs
 
 ## POST /generate
 
-Ns Shiftのシフト生成用payloadを受け取るエンドポイントです。
-
-現在のHTTP endpointはpayloadのvalidationのみを行います。OR-Tools最適化器はAPI内部で利用でき、次の実装でHTTP endpointから呼び出して結果JSONへ変換します。
+Ns Shiftのシフト生成用payloadを受け取り、最適化済みのシフトを返すエンドポイントです。
 
 正常なpayloadを送信すると、例えば以下を返します。
 
 ```json
 {
-  "status": "received",
-  "staff_count": 20,
-  "target_day_count": 30
+  "status": "success",
+  "solver_status": "OPTIMAL",
+  "shifts": [
+    {
+      "staff_id": 1,
+      "date": "2026-09-01",
+      "shift_type": "day"
+    }
+  ],
+  "phase_results": [
+    {
+      "name": "night_count_balance",
+      "status": "OPTIMAL",
+      "objective_value": 0,
+      "optimal": true
+    }
+  ]
 }
 ```
+
+入力内のスタッフID・対象日・日別ルール・休日数が整合しない場合や、固定条件が成立しない場合は、HTTP 422と日本語の説明を返します。
 
 ## Run Tests
 
@@ -172,9 +192,7 @@ docker run --rm \
 
 ## Next Step
 
-次の実装では、最適化結果をHTTPレスポンス用JSONへ変換し、`/generate` から最適化器を呼び出します。
-
-最終的には、
+Cloud Runへデプロイし、Ns ShiftからHTTPで生成依頼を送れるようにすると、
 
 ```text
 Ns Shift
