@@ -84,6 +84,7 @@ Cloud Run
 │   └── test_main.py
 ├── Dockerfile
 ├── requirements.txt
+├── service.yaml
 ├── .dockerignore
 ├── .gitignore
 └── README.md
@@ -172,6 +173,24 @@ Ns Shiftのシフト生成用payloadを受け取り、最適化済みのシフ�
 ```
 
 入力内のスタッフID・対象日・日別ルール・休日数が整合しない場合や、固定条件が成立しない場合は、HTTP 422と日本語の説明を返します。
+
+## Cloud Run Configuration
+
+Cloud Run用の設定は [service.yaml](service.yaml) でGit管理します。デプロイ前に、`IMAGE_URL` を実際のコンテナイメージURLへ置き換えてください。Project ID、リージョン、Artifact Registry、IAM、公開可否、Service Accountは、このファイルでは固定しておらず、実デプロイ時に決定します。
+
+| 設定 | 値 | 目的 |
+| --- | --- | --- |
+| CPU | 2 vCPU | OR-Toolsの最適化を2 vCPUで実行するため。 |
+| Memory | 2 GiB | 最適化モデルとsolverが必要とするメモリを確保するため。 |
+| Concurrency | 1 | 同一インスタンスで重い生成処理を複数同時実行しないため。 |
+| Min instances | 0 | 未使用時にscale-to-zeroしてコストを抑えるため。 |
+| Max instances | 2 | 最大2件まで並列生成可能にしつつ、想定外のスケールアウトを抑えるため。 |
+| Timeout | 300秒 | シフト生成に最大300秒を許可するため。 |
+| Startup CPU Boost | ON | scale-to-zero後のコールドスタート時間を短縮するため。 |
+| OR-Tools workers | 2 | 割り当てCPU数とOR-Tools worker数を揃えるため。 |
+| Billing | request-based | リクエスト処理中を中心にCPUを割り当てるため。 |
+
+DockerfileはCloud Runの`PORT`環境変数を優先し、未設定時は`8080`で`0.0.0.0`に待ち受けます。
 
 ## Run Tests
 

@@ -1,7 +1,8 @@
 """FastAPI entry point for the Ns Shift optimizer service."""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
+from .auth import require_optimizer_api_key
 from .context import build_optimization_context
 from .optimization import optimize_shift
 from .results import build_generate_shift_response
@@ -27,7 +28,11 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
-@app.post("/generate", response_model=GenerateShiftResponse)
+@app.post(
+    "/generate",
+    response_model=GenerateShiftResponse,
+    dependencies=[Depends(require_optimizer_api_key)],
+)
 def generate_shift(payload: GenerateShiftRequest) -> GenerateShiftResponse:
     """Generate a shift plan and return only JSON-serializable result data."""
 

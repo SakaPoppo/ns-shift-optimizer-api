@@ -1,3 +1,7 @@
+import secrets
+
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.constants import (
@@ -15,6 +19,16 @@ from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES
 
 
 client = TestClient(app)
+API_KEY = secrets.token_urlsafe(32)
+
+
+def api_headers() -> dict[str, str]:
+    return {"X-API-Key": API_KEY}
+
+
+@pytest.fixture(autouse=True)
+def configured_optimizer_api_key(monkeypatch):
+    monkeypatch.setenv("OPTIMIZER_API_KEY", API_KEY)
 
 
 def make_payload(
@@ -82,7 +96,7 @@ def test_health_returns_ok() -> None:
 
 
 def test_generate_returns_serializable_optimization_result() -> None:
-    response = client.post("/generate", json=make_payload())
+    response = client.post("/generate", json=make_payload(), headers=api_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -109,6 +123,7 @@ def test_generate_preserves_fixed_night_and_its_after_night_constraint() -> None
                 {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_NIGHT}
             ],
         ),
+        headers=api_headers(),
     )
 
     assert response.status_code == 200
@@ -144,6 +159,7 @@ def test_generate_never_assigns_night_to_night_ineligible_staff() -> None:
             ],
             required_night_staff=[1],
         ),
+        headers=api_headers(),
     )
 
     assert response.status_code == 200
@@ -166,6 +182,7 @@ def test_generate_keeps_fixed_non_generated_shifts_in_response() -> None:
                 {"staff_id": 1, "date": "2026-09-04", "shift_type": SHIFT_OFF_REQUEST},
             ],
         ),
+        headers=api_headers(),
     )
 
     assert response.status_code == 200
@@ -188,6 +205,7 @@ def test_generate_applies_previous_work_streak_to_first_day() -> None:
                 {"staff_id": 1, "previous_consecutive_work_days": 5}
             ],
         ),
+        headers=api_headers(),
     )
 
     assert response.status_code == 200
@@ -210,6 +228,7 @@ def test_generate_preserves_user_override_then_forces_generated_off() -> None:
             ],
             user_override_assignment_keys=override_keys,
         ),
+        headers=api_headers(),
     )
 
     assert response.status_code == 200
@@ -220,7 +239,7 @@ def test_generate_returns_meaningful_http_error_for_inconsistent_payload() -> No
     payload = make_payload(days=2)
     payload["effective_rules"] = payload["effective_rules"][:1]
 
-    response = client.post("/generate", json=payload)
+    response = client.post("/generate", json=payload, headers=api_headers())
 
     assert response.status_code == 422
     assert "effective_rules" in response.json()["detail"]
@@ -230,6 +249,38 @@ def test_generate_rejects_invalid_payload() -> None:
     invalid_payload = make_payload()
     invalid_payload["staff_members"][0]["ability_level"] = 6
 
-    response = client.post("/generate", json=invalid_payload)
+    response = client.post(
+        "/generate", json=invalid_payload, headers=api_headers()
+    )
 
     assert response.status_code == 422
+
+
+def test_generate_accepts_correct_api_key() -> None:
+    response = client.post("/generate", json=make_payload(), headers=api_headers())
+
+    assert response.status_code == 200
+
+
+def test_generate_rejects_missing_api_key() -> None:
+    response = client.post("/generate", json=make_payload())
+
+    assert response.status_code == 401
+
+
+def test_generate_rejects_invalid_api_key() -> None:
+    response = client.post(
+        "/generate",
+        json=make_payload(),
+        headers={"X-API-Key": secrets.token_urlsafe(32)},
+    )
+
+    assert response.status_code == 401
+
+
+def test_generate_is_unavailable_when_server_key_is_not_configured(monkeypatch) -> None:
+    monkeypatch.delenv("OPTIMIZER_API_KEY")
+
+    response = client.post("/generate", json=make_payload())
+
+    assert response.status_code == 503
