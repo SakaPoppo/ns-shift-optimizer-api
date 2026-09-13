@@ -1,0 +1,33 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+
+metadata:
+  name: ns-shift-optimizer-api
+
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "2"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/cpu-throttling: "true"
+
+    spec:
+      containerConcurrency: 1
+      timeoutSeconds: 300
+
+      containers:
+        - image: IMAGE_URL
+          resources:
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          env:
+            - name: OPTIMIZER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: optimizer-api-key
+                  key: latest
+            - name: ORTOOLS_NUM_SEARCH_WORKERS
+              value: "2"
