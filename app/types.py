@@ -131,3 +131,7 @@ class ShiftOptimizationOutput:
 
 class OptimizationError(Exception):
     """Signals unsatisfiable input or an unsuccessful solver execution."""
+
+
+class InfeasibleOptimizationError(OptimizationError):
+    """Signals a valid optimization request with no feasible assignment."""

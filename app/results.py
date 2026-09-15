@@ -1,8 +1,9 @@
 """Conversion from OR-Tools output to JSON-safe API response models."""
 
+from collections import Counter
 from datetime import date
 
-from .constants import GENERATABLE_SHIFT_TYPES
+from .constants import GENERATABLE_SHIFT_TYPES, SHIFT_DAY, SHIFT_NIGHT
 from .schemas import (
     GenerationIssueResponse,
     GenerateShiftResponse,
@@ -59,6 +60,27 @@ def build_generate_shift_response(
     )
 
 
+def build_infeasible_generate_shift_response(
+    *, context: OptimizationContext
+) -> GenerateShiftResponse:
+    """Return a completed, but unsatisfiable, optimization result."""
+
+    issues = _build_staffing_capacity_shortage_issues(context)
+    issues.append(
+        GenerationIssueResponse(
+            code="GENERATION_INFEASIBLE",
+            severity="error",
+        )
+    )
+    return GenerateShiftResponse(
+        status="infeasible",
+        solver_status="INFEASIBLE",
+        shifts=[],
+        phase_results=[],
+        issues=issues,
+    )
+
+
 def _selected_shift_type(*, optimization: ShiftOptimizationOutput, cell_key) -> str | None:
     """Return the single generated shift selected by the final solver."""
 
@@ -81,6 +103,22 @@ def _serialize_daily_counts(counts: dict[date, int]) -> dict[str, int]:
     """Keep date-keyed solver data JSON-safe without introducing UI text."""
 
     return {target_date.isoformat(): count for target_date, count in counts.items()}
+
+
+def _most_frequent_day_staffing_count(
+    actual_day_counts: dict[date, int],
+) -> int | None:
+    """Return the modal daily staffing count, breaking ties toward the lower count."""
+
+    frequencies = Counter(actual_day_counts.values())
+    if not frequencies:
+        return None
+    highest_frequency = max(frequencies.values())
+    return min(
+        count
+        for count, frequency in frequencies.items()
+        if frequency == highest_frequency
+    )
 
 
 def _build_generation_issues(
@@ -145,11 +183,18 @@ def _build_generation_issues(
             )
         )
 
-    imbalance_dates = [
-        target_date
-        for target_date, delta in day_staffing_deltas.items()
-        if abs(delta) >= 2
-    ]
+    modal_day_staffing_count = _most_frequent_day_staffing_count(
+        actual_day_counts
+    )
+    imbalance_dates = (
+        [
+            target_date
+            for target_date, actual_count in actual_day_counts.items()
+            if abs(actual_count - modal_day_staffing_count) >= 2
+        ]
+        if modal_day_staffing_count is not None
+        else []
+    )
     if imbalance_dates:
         issues.append(
             GenerationIssueResponse(
@@ -158,12 +203,8 @@ def _build_generation_issues(
                 dates=imbalance_dates,
                 details={
                     **daily_count_details,
-                    "minimum_delta": _solver_value(
-                        optimization.solver, day_data.minimum_delta
-                    ),
-                    "maximum_delta": _solver_value(
-                        optimization.solver, day_data.maximum_delta
-                    ),
+                    "modal_day_staffing_count": modal_day_staffing_count,
+                    "count_difference_threshold": 2,
                 },
             )
         )
@@ -209,4 +250,54 @@ def _build_generation_issues(
                 details={"incomplete_items": incomplete_items},
             )
         )
+    return issues
+
+
+def _build_staffing_capacity_shortage_issues(
+    context: OptimizationContext,
+) -> list[GenerationIssueResponse]:
+    """Report daily shortages that are certain from fixed assignments only."""
+
+    issues = []
+    for target_date in context.month_dates:
+        rule = context.effective_rules[target_date]
+        fixed_shift_by_staff_id = {
+            staff_id: shift_type
+            for (staff_id, assignment_date), shift_type in (
+                context.fixed_assignments.items()
+            )
+            if assignment_date == target_date
+        }
+        available_staff = [
+            staff
+            for staff in context.staff_members
+            if fixed_shift_by_staff_id.get(staff.id)
+            in {None, SHIFT_DAY, SHIFT_NIGHT}
+        ]
+        available_night_count = sum(
+            staff.can_night_shift
+            and fixed_shift_by_staff_id.get(staff.id) in {None, SHIFT_NIGHT}
+            for staff in context.staff_members
+        )
+        required_total_count = (
+            rule.required_day_staff + rule.required_night_staff
+        )
+        if (
+            len(available_staff) < required_total_count
+            or available_night_count < rule.required_night_staff
+        ):
+            issues.append(
+                GenerationIssueResponse(
+                    code="STAFFING_CAPACITY_SHORTAGE",
+                    severity="error",
+                    dates=[target_date],
+                    details={
+                        "available_count": len(available_staff),
+                        "available_night_count": available_night_count,
+                        "required_day_count": rule.required_day_staff,
+                        "required_night_count": rule.required_night_staff,
+                        "required_total_count": required_total_count,
+                    },
+                )
+            )
     return issues

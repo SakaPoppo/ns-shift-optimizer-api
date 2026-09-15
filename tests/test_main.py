@@ -170,7 +170,18 @@ def test_generation_issues_are_json_safe_and_match_django_criteria() -> None:
             "required_day_counts": {"2026-09-01": 5, "2026-09-02": 5},
         },
     }
-    assert issues_by_code["DAY_STAFFING_IMBALANCE"]["dates"] == ["2026-09-01"]
+    assert issues_by_code["DAY_STAFFING_IMBALANCE"] == {
+        "code": "DAY_STAFFING_IMBALANCE",
+        "severity": "warning",
+        "dates": ["2026-09-02"],
+        "staff_ids": [],
+        "details": {
+            "actual_day_counts": {"2026-09-01": 3, "2026-09-02": 5},
+            "required_day_counts": {"2026-09-01": 5, "2026-09-02": 5},
+            "modal_day_staffing_count": 3,
+            "count_difference_threshold": 2,
+        },
+    }
     assert issues_by_code["NIGHT_COUNT_IMBALANCE"] == {
         "code": "NIGHT_COUNT_IMBALANCE",
         "severity": "warning",
@@ -320,7 +331,106 @@ def test_generate_returns_meaningful_http_error_for_inconsistent_payload() -> No
     response = client.post("/generate", json=payload, headers=api_headers())
 
     assert response.status_code == 422
-    assert "effective_rules" in response.json()["detail"]
+    assert response.json() == {"detail": {"code": "INVALID_OPTIMIZER_REQUEST"}}
+
+
+def test_generate_returns_infeasible_result_for_unsatisfiable_conditions() -> None:
+    response = client.post(
+        "/generate",
+        json=make_payload(
+            days=1,
+            required_night_staff=[1],
+            off_days={1: 1},
+        ),
+        headers=api_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "infeasible",
+        "solver_status": "INFEASIBLE",
+        "shifts": [],
+        "phase_results": [],
+        "issues": [
+            {
+                "code": "GENERATION_INFEASIBLE",
+                "severity": "error",
+                "dates": [],
+                "staff_ids": [],
+                "details": {},
+            }
+        ],
+    }
+
+
+def test_generate_reports_clear_daily_staffing_capacity_shortage() -> None:
+    staff_members = [
+        {
+            "id": staff_id,
+            "role": "leader" if staff_id == 1 else "member",
+            "ability_level": 3,
+            "can_night_shift": True,
+            "regular_days_off": [],
+        }
+        for staff_id in range(1, 9)
+    ]
+    response = client.post(
+        "/generate",
+        json=make_payload(
+            days=1,
+            staff_members=staff_members,
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_OFF},
+                {"staff_id": 2, "date": "2026-09-01", "shift_type": SHIFT_OFF},
+                {
+                    "staff_id": 3,
+                    "date": "2026-09-01",
+                    "shift_type": SHIFT_AFTER_NIGHT,
+                },
+            ],
+        )
+        | {
+            "effective_rules": [
+                {
+                    "date": "2026-09-01",
+                    "required_day_staff": 6,
+                    "required_night_staff": 2,
+                    "required_leader_staff": 0,
+                    "min_ability_level": None,
+                    "min_ability_level_staff_count": None,
+                    "max_consecutive_work_days": 5,
+                    "night_shift_next_day_off": True,
+                }
+            ]
+        },
+        headers=api_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "infeasible"
+    assert body["issues"] == [
+        {
+            "code": "STAFFING_CAPACITY_SHORTAGE",
+            "severity": "error",
+            "dates": ["2026-09-01"],
+            "staff_ids": [],
+            "details": {
+                "available_count": 5,
+                "available_night_count": 5,
+                "required_day_count": 6,
+                "required_night_count": 2,
+                "required_total_count": 8,
+            },
+        },
+        {
+            "code": "GENERATION_INFEASIBLE",
+            "severity": "error",
+            "dates": [],
+            "staff_ids": [],
+            "details": {},
+        },
+    ]
 
 
 def test_generate_rejects_invalid_payload() -> None:
