@@ -5,13 +5,16 @@ from fastapi import Depends, FastAPI, HTTPException
 from .auth import require_optimizer_api_key
 from .context import build_optimization_context
 from .optimization import optimize_shift
-from .results import build_generate_shift_response
+from .results import (
+    build_generate_shift_response,
+    build_infeasible_generate_shift_response,
+)
 from .schemas import (
     GenerateShiftRequest,
     GenerateShiftResponse,
     HealthResponse,
 )
-from .types import OptimizationError
+from .types import InfeasibleOptimizationError, OptimizationError
 
 
 app = FastAPI(
@@ -43,5 +46,10 @@ def generate_shift(payload: GenerateShiftRequest) -> GenerateShiftResponse:
             context=context,
             optimization=optimization,
         )
+    except InfeasibleOptimizationError:
+        return build_infeasible_generate_shift_response(context=context)
     except OptimizationError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_OPTIMIZER_REQUEST"},
+        ) from error

@@ -32,6 +32,7 @@ from .constants import (
 from .types import (
     AbilityDistributionData,
     DayStaffingBalanceData,
+    InfeasibleOptimizationError,
     NightCountBalanceData,
     OptimizationContext,
     OptimizationError,
@@ -387,6 +388,8 @@ def _run_optimization_phases(
             )
             break
 
+        if result.status == "INFEASIBLE":
+            raise InfeasibleOptimizationError()
         if result.status not in SUCCESSFUL_OPTIMIZATION_STATUSES:
             raise OptimizationError(
                 _build_solver_error_message(result.status)
@@ -458,6 +461,8 @@ def _solve_and_fix_objective(
             optimal=False,
             solver=None,
         )
+    if status == cp_model.INFEASIBLE:
+        raise InfeasibleOptimizationError()
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         raise OptimizationError(_build_solver_error_message(status_name))
     objective_value = int(round(solver.ObjectiveValue()))
