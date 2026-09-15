@@ -6,7 +6,7 @@ mirror the JSON produced by Ns Shift's ``build_optimizer_payload`` function.
 
 from datetime import date
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .types import AbilityLevel, Weekday
 
@@ -96,8 +96,19 @@ class OptimizationPhaseOutput(BaseModel):
     optimal: bool
 
 
+class GenerationIssueResponse(BaseModel):
+    """Machine-readable generation fact consumed by the Django application."""
+
+    code: str
+    severity: str
+    dates: list[date] = Field(default_factory=list)
+    staff_ids: list[int] = Field(default_factory=list)
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 class GenerateShiftResponse(BaseModel):
     status: str
     solver_status: str
     shifts: list[GeneratedShiftOutput]
     phase_results: list[OptimizationPhaseOutput]
+    issues: list[GenerationIssueResponse]

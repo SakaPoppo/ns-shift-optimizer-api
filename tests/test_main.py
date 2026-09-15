@@ -1,4 +1,6 @@
 import secrets
+from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +18,7 @@ from app.constants import (
 )
 from app.main import app
 from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES
+from app.results import _build_generation_issues
 
 
 client = TestClient(app)
@@ -111,6 +114,81 @@ def test_generate_returns_serializable_optimization_result() -> None:
         "long_streak",
     }
     assert all("solver" not in phase for phase in body["phase_results"])
+    assert body["issues"][0] == {
+        "code": "SHIFT_GENERATED",
+        "severity": "success",
+        "dates": [],
+        "staff_ids": [],
+        "details": {},
+    }
+    assert {issue["code"] for issue in body["issues"]} == {
+        "SHIFT_GENERATED",
+        "DAY_STAFFING_ABOVE_REQUIRED",
+    }
+    assert not {
+        issue["code"]
+        for issue in body["issues"]
+        if issue["severity"] in {"warning", "error"}
+    }
+
+
+def test_generation_issues_are_json_safe_and_match_django_criteria() -> None:
+    first_date = date(2026, 9, 1)
+    second_date = date(2026, 9, 2)
+    optimization = SimpleNamespace(
+        solver=SimpleNamespace(Value=lambda expression: expression),
+        day_staffing_balance_data=SimpleNamespace(
+            actual_day_count_vars={first_date: 3, second_date: 5},
+            required_day_counts={first_date: 5, second_date: 5},
+            day_staffing_delta_vars={first_date: -2, second_date: 0},
+            minimum_delta=-2,
+            maximum_delta=0,
+        ),
+        night_count_balance_data=SimpleNamespace(
+            night_count_vars={12: 3, 18: 1},
+        ),
+        phase_results=[
+            SimpleNamespace(name="day_ability_balance", status="UNKNOWN"),
+            SimpleNamespace(name="night_ability_balance", status="NOT_RUN"),
+            SimpleNamespace(name="long_streak", status="NOT_RUN"),
+        ],
+    )
+
+    issues = _build_generation_issues(
+        optimization=optimization,
+    )
+    serialized_issues = [issue.model_dump(mode="json") for issue in issues]
+    issues_by_code = {issue["code"]: issue for issue in serialized_issues}
+
+    assert issues_by_code["DAY_STAFFING_BELOW_REQUIRED"] == {
+        "code": "DAY_STAFFING_BELOW_REQUIRED",
+        "severity": "warning",
+        "dates": ["2026-09-01"],
+        "staff_ids": [],
+        "details": {
+            "actual_day_counts": {"2026-09-01": 3, "2026-09-02": 5},
+            "required_day_counts": {"2026-09-01": 5, "2026-09-02": 5},
+        },
+    }
+    assert issues_by_code["DAY_STAFFING_IMBALANCE"]["dates"] == ["2026-09-01"]
+    assert issues_by_code["NIGHT_COUNT_IMBALANCE"] == {
+        "code": "NIGHT_COUNT_IMBALANCE",
+        "severity": "warning",
+        "dates": [],
+        "staff_ids": [12, 18],
+        "details": {
+            "minimum_count": 1,
+            "maximum_count": 3,
+            "count_difference": 2,
+        },
+    }
+    assert issues_by_code["OPTIMIZATION_INCOMPLETE"]["details"] == {
+        "incomplete_items": [
+            "day_ability_balance",
+            "night_ability_balance",
+            "long_streak",
+        ]
+    }
 
 
 def test_generate_preserves_fixed_night_and_its_after_night_constraint() -> None:
