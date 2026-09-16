@@ -63,6 +63,10 @@ def make_request(
                 {"staff_id": staff_id, "off_days": count}
                 for staff_id, count in off_days_by_staff.items()
             ],
+            "configured_off_days": [
+                {"staff_id": staff_id, "off_days": count}
+                for staff_id, count in off_days_by_staff.items()
+            ],
             "user_override_assignment_keys": user_override_assignment_keys or [],
         }
     )

@@ -52,6 +52,16 @@ def build_optimization_context(request: GenerateShiftRequest) -> OptimizationCon
         effective_off_days={
             item.staff_id: item.off_days for item in request.effective_off_days
         },
+        configured_off_days=(
+            {
+                item.staff_id: item.off_days
+                for item in request.configured_off_days
+            }
+            or {
+                item.staff_id: item.off_days
+                for item in request.effective_off_days
+            }
+        ),
         user_override_assignment_keys={
             (item.staff_id, item.date)
             for item in request.user_override_assignment_keys
@@ -92,6 +102,18 @@ def _validate_request_consistency(request: GenerateShiftRequest) -> None:
     ):
         raise OptimizationError(
             "effective_off_days は全 staff_members に対して1件ずつ必要です。"
+        )
+
+    configured_off_day_staff_ids = [
+        item.staff_id for item in request.configured_off_days
+    ]
+    if configured_off_day_staff_ids and (
+        len(set(configured_off_day_staff_ids))
+        != len(configured_off_day_staff_ids)
+        or set(configured_off_day_staff_ids) != staff_id_set
+    ):
+        raise OptimizationError(
+            "configured_off_days は全 staff_members に対して1件ずつ必要です。"
         )
 
     _validate_assignment_cells(

@@ -56,6 +56,13 @@ class EffectiveOffDayInput(BaseModel):
     off_days: int
 
 
+class ConfiguredOffDayInput(BaseModel):
+    """The monthly off-day count configured for one staff member."""
+
+    staff_id: int
+    off_days: int
+
+
 class AssignmentKeyInput(BaseModel):
     """Identifies a user-controlled assignment cell."""
 
@@ -72,6 +79,7 @@ class GenerateShiftRequest(BaseModel):
     effective_rules: list[EffectiveRuleInput]
     previous_consecutive_work_days: list[PreviousConsecutiveWorkInput]
     effective_off_days: list[EffectiveOffDayInput]
+    configured_off_days: list[ConfiguredOffDayInput] = Field(default_factory=list)
     user_override_assignment_keys: list[AssignmentKeyInput]
 
 
