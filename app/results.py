@@ -3,7 +3,11 @@
 from collections import Counter
 from datetime import date
 
-from .constants import GENERATABLE_SHIFT_TYPES, SHIFT_DAY, SHIFT_NIGHT
+from .constants import (
+    GENERATABLE_SHIFT_TYPES,
+    MONTHLY_OFF_SHIFT_TYPES,
+    SHIFT_NIGHT,
+)
 from .schemas import (
     GenerationIssueResponse,
     GenerateShiftResponse,
@@ -55,7 +59,9 @@ def build_generate_shift_response(
             for phase in optimization.phase_results
         ],
         issues=_build_generation_issues(
+            context=context,
             optimization=optimization,
+            shifts=shifts,
         ),
     )
 
@@ -65,8 +71,9 @@ def build_infeasible_generate_shift_response(
 ) -> GenerateShiftResponse:
     """Return a completed, but unsatisfiable, optimization result."""
 
-    issues = _build_staffing_capacity_shortage_issues(context)
-    issues.append(
+    issues = _build_insufficient_night_staff_issues(context)
+    if not issues:
+        issues.append(
         GenerationIssueResponse(
             code="GENERATION_INFEASIBLE",
             severity="error",
@@ -123,7 +130,9 @@ def _most_frequent_day_staffing_count(
 
 def _build_generation_issues(
     *,
+    context: OptimizationContext | None = None,
     optimization: ShiftOptimizationOutput,
+    shifts: list[GeneratedShiftOutput] | None = None,
 ) -> list[GenerationIssueResponse]:
     """Build the shared structured Issue contract from a solved model.
 
@@ -250,13 +259,35 @@ def _build_generation_issues(
                 details={"incomplete_items": incomplete_items},
             )
         )
+    if context is not None and shifts is not None:
+        actual_monthly_off_counts = Counter(
+            shift.staff_id
+            for shift in shifts
+            if shift.shift_type in MONTHLY_OFF_SHIFT_TYPES
+        )
+        for staff_member in context.staff_members:
+            configured_off_count = context.configured_off_days[staff_member.id]
+            actual_off_count = actual_monthly_off_counts[staff_member.id]
+            if actual_off_count > configured_off_count:
+                issues.append(
+                    GenerationIssueResponse(
+                        code="MONTHLY_OFF_COUNT_EXCEEDED",
+                        severity="warning",
+                        staff_ids=[staff_member.id],
+                        details={
+                            "configured_off_count": configured_off_count,
+                            "actual_off_count": actual_off_count,
+                            "excess_count": actual_off_count - configured_off_count,
+                        },
+                    )
+                )
     return issues
 
 
-def _build_staffing_capacity_shortage_issues(
+def _build_insufficient_night_staff_issues(
     context: OptimizationContext,
 ) -> list[GenerationIssueResponse]:
-    """Report daily shortages that are certain from fixed assignments only."""
+    """Report hard nightly shortages that are certain from fixed assignments."""
 
     issues = []
     for target_date in context.month_dates:
@@ -268,35 +299,20 @@ def _build_staffing_capacity_shortage_issues(
             )
             if assignment_date == target_date
         }
-        available_staff = [
-            staff
-            for staff in context.staff_members
-            if fixed_shift_by_staff_id.get(staff.id)
-            in {None, SHIFT_DAY, SHIFT_NIGHT}
-        ]
         available_night_count = sum(
             staff.can_night_shift
             and fixed_shift_by_staff_id.get(staff.id) in {None, SHIFT_NIGHT}
             for staff in context.staff_members
         )
-        required_total_count = (
-            rule.required_day_staff + rule.required_night_staff
-        )
-        if (
-            len(available_staff) < required_total_count
-            or available_night_count < rule.required_night_staff
-        ):
+        if available_night_count < rule.required_night_staff:
             issues.append(
                 GenerationIssueResponse(
-                    code="STAFFING_CAPACITY_SHORTAGE",
+                    code="INSUFFICIENT_NIGHT_STAFF",
                     severity="error",
                     dates=[target_date],
                     details={
-                        "available_count": len(available_staff),
-                        "available_night_count": available_night_count,
-                        "required_day_count": rule.required_day_staff,
-                        "required_night_count": rule.required_night_staff,
-                        "required_total_count": required_total_count,
+                        "available_count": available_night_count,
+                        "required_count": rule.required_night_staff,
                     },
                 )
             )

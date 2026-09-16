@@ -45,6 +45,7 @@ class OptimizationContext:
     effective_rules: dict[date, EffectiveRule]
     previous_consecutive_work_days: dict[int, int]
     effective_off_days: dict[int, int]
+    configured_off_days: dict[int, int]
     user_override_assignment_keys: set[tuple[int, date]] = field(
         default_factory=set
     )

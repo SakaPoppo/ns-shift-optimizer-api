@@ -40,6 +40,7 @@ def make_payload(
     staff_members: list[dict] | None = None,
     required_night_staff: list[int] | None = None,
     off_days: dict[int, int] | None = None,
+    configured_off_days: dict[int, int] | None = None,
     fixed_assignments: list[dict] | None = None,
     previous_consecutive_work_days: list[dict] | None = None,
     user_override_assignment_keys: list[dict] | None = None,
@@ -57,6 +58,7 @@ def make_payload(
     ]
     required_night_staff = required_night_staff or [0] * days
     off_days = off_days or {staff["id"]: 0 for staff in staff_members}
+    configured_off_days = configured_off_days or off_days
     return {
         "month_dates": dates,
         "staff_members": staff_members,
@@ -78,6 +80,10 @@ def make_payload(
         "effective_off_days": [
             {"staff_id": staff_id, "off_days": count}
             for staff_id, count in off_days.items()
+        ],
+        "configured_off_days": [
+            {"staff_id": staff_id, "off_days": count}
+            for staff_id, count in configured_off_days.items()
         ],
         "user_override_assignment_keys": user_override_assignment_keys or [],
     }
@@ -363,7 +369,7 @@ def test_generate_returns_infeasible_result_for_unsatisfiable_conditions() -> No
     }
 
 
-def test_generate_reports_clear_daily_staffing_capacity_shortage() -> None:
+def test_generate_allows_day_staffing_shortage_when_required_nights_are_possible() -> None:
     staff_members = [
         {
             "id": staff_id,
@@ -382,18 +388,13 @@ def test_generate_reports_clear_daily_staffing_capacity_shortage() -> None:
             fixed_assignments=[
                 {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_OFF},
                 {"staff_id": 2, "date": "2026-09-01", "shift_type": SHIFT_OFF},
-                {
-                    "staff_id": 3,
-                    "date": "2026-09-01",
-                    "shift_type": SHIFT_AFTER_NIGHT,
-                },
             ],
         )
         | {
             "effective_rules": [
                 {
                     "date": "2026-09-01",
-                    "required_day_staff": 6,
+                        "required_day_staff": 5,
                     "required_night_staff": 2,
                     "required_leader_staff": 0,
                     "min_ability_level": None,
@@ -408,29 +409,61 @@ def test_generate_reports_clear_daily_staffing_capacity_shortage() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "infeasible"
-    assert body["issues"] == [
-        {
-            "code": "STAFFING_CAPACITY_SHORTAGE",
-            "severity": "error",
-            "dates": ["2026-09-01"],
-            "staff_ids": [],
-            "details": {
-                "available_count": 5,
-                "available_night_count": 5,
-                "required_day_count": 6,
-                "required_night_count": 2,
-                "required_total_count": 8,
-            },
-        },
-        {
-            "code": "GENERATION_INFEASIBLE",
-            "severity": "error",
-            "dates": [],
-            "staff_ids": [],
-            "details": {},
-        },
+    assert body["status"] == "success"
+    assert sum(
+        shift["shift_type"] == SHIFT_DAY for shift in body["shifts"]
+    ) == 4
+    assert sum(
+        shift["shift_type"] == SHIFT_NIGHT for shift in body["shifts"]
+    ) == 2
+    issues_by_code = {issue["code"]: issue for issue in body["issues"]}
+    assert "STAFFING_CAPACITY_SHORTAGE" not in issues_by_code
+    assert issues_by_code["DAY_STAFFING_BELOW_REQUIRED"]["dates"] == [
+        "2026-09-01"
     ]
+
+
+def test_generate_warns_when_fixed_monthly_off_count_exceeds_configuration() -> None:
+    staff_member = {
+        "id": 1,
+        "role": "leader",
+        "ability_level": 3,
+        "can_night_shift": True,
+        "regular_days_off": [],
+    }
+    response = client.post(
+        "/generate",
+        json=make_payload(
+            days=12,
+            staff_members=[staff_member],
+            off_days={1: 10},
+            configured_off_days={1: 10},
+            fixed_assignments=[
+                {
+                    "staff_id": 1,
+                    "date": f"2026-09-{day:02d}",
+                    "shift_type": SHIFT_OFF,
+                }
+                for day in range(1, 13)
+            ],
+        ),
+        headers=api_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert {
+        "code": "MONTHLY_OFF_COUNT_EXCEEDED",
+        "severity": "warning",
+        "dates": [],
+        "staff_ids": [1],
+        "details": {
+            "configured_off_count": 10,
+            "actual_off_count": 12,
+            "excess_count": 2,
+        },
+    } in body["issues"]
 
 
 def test_generate_rejects_invalid_payload() -> None:
