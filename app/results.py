@@ -6,6 +6,8 @@ from datetime import date
 from .constants import (
     GENERATABLE_SHIFT_TYPES,
     MONTHLY_OFF_SHIFT_TYPES,
+    ROLE_LEADER,
+    SHIFT_DAY,
     SHIFT_NIGHT,
 )
 from .schemas import (
@@ -71,14 +73,14 @@ def build_infeasible_generate_shift_response(
 ) -> GenerateShiftResponse:
     """Return a completed, but unsatisfiable, optimization result."""
 
-    issues = _build_insufficient_night_staff_issues(context)
+    issues = _build_hard_staffing_issues(context)
     if not issues:
         issues.append(
-        GenerationIssueResponse(
-            code="GENERATION_INFEASIBLE",
-            severity="error",
+            GenerationIssueResponse(
+                code="GENERATION_INFEASIBLE",
+                severity="error",
+            )
         )
-    )
     return GenerateShiftResponse(
         status="infeasible",
         solver_status="INFEASIBLE",
@@ -284,10 +286,15 @@ def _build_generation_issues(
     return issues
 
 
-def _build_insufficient_night_staff_issues(
+def _build_hard_staffing_issues(
     context: OptimizationContext,
 ) -> list[GenerationIssueResponse]:
-    """Report hard nightly shortages that are certain from fixed assignments."""
+    """Report date-specific staffing shortages certain from fixed assignments.
+
+    These checks use only assignment upper bounds, so they never guess at a
+    solver-only conflict.  More complex infeasibilities retain the generic
+    fallback response.
+    """
 
     issues = []
     for target_date in context.month_dates:
@@ -299,6 +306,14 @@ def _build_insufficient_night_staff_issues(
             )
             if assignment_date == target_date
         }
+        available_day_staff = [
+            staff
+            for staff in context.staff_members
+            if fixed_shift_by_staff_id.get(staff.id) in {None, SHIFT_DAY}
+        ]
+        available_leader_count = sum(
+            staff.role == ROLE_LEADER for staff in available_day_staff
+        )
         available_night_count = sum(
             staff.can_night_shift
             and fixed_shift_by_staff_id.get(staff.id) in {None, SHIFT_NIGHT}
@@ -313,6 +328,18 @@ def _build_insufficient_night_staff_issues(
                     details={
                         "available_count": available_night_count,
                         "required_count": rule.required_night_staff,
+                    },
+                )
+            )
+        if available_leader_count < rule.required_leader_staff:
+            issues.append(
+                GenerationIssueResponse(
+                    code="INSUFFICIENT_LEADER_STAFF",
+                    severity="error",
+                    dates=[target_date],
+                    details={
+                        "available_count": available_leader_count,
+                        "required_count": rule.required_leader_staff,
                     },
                 )
             )
