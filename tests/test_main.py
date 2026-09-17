@@ -369,6 +369,95 @@ def test_generate_returns_infeasible_result_for_unsatisfiable_conditions() -> No
     }
 
 
+def test_generate_reports_leader_shortage_before_generic_fallback() -> None:
+    staff_members = [
+        {
+            "id": 1,
+            "role": "leader",
+            "ability_level": 3,
+            "can_night_shift": True,
+            "regular_days_off": [],
+        },
+        {
+            "id": 2,
+            "role": "member",
+            "ability_level": 3,
+            "can_night_shift": True,
+            "regular_days_off": [],
+        },
+    ]
+    response = client.post(
+        "/generate",
+        json=make_payload(
+            days=1,
+            staff_members=staff_members,
+            off_days={1: 1, 2: 0},
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_OFF}
+            ],
+        )
+        | {
+            "effective_rules": [
+                {
+                    "date": "2026-09-01",
+                    "required_day_staff": 1,
+                    "required_night_staff": 0,
+                    "required_leader_staff": 1,
+                    "min_ability_level": None,
+                    "min_ability_level_staff_count": None,
+                    "max_consecutive_work_days": 5,
+                    "night_shift_next_day_off": True,
+                }
+            ]
+        },
+        headers=api_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "infeasible"
+    assert body["issues"] == [
+        {
+            "code": "INSUFFICIENT_LEADER_STAFF",
+            "severity": "error",
+            "dates": ["2026-09-01"],
+            "staff_ids": [],
+            "details": {"available_count": 0, "required_count": 1},
+        },
+    ]
+
+
+def test_generate_reports_night_shortage_before_generic_fallback() -> None:
+    response = client.post(
+        "/generate",
+        json=make_payload(
+            days=1,
+            staff_members=[
+                {
+                    "id": 1,
+                    "role": "leader",
+                    "ability_level": 3,
+                    "can_night_shift": False,
+                    "regular_days_off": [],
+                }
+            ],
+            required_night_staff=[1],
+        ),
+        headers=api_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["issues"] == [
+        {
+            "code": "INSUFFICIENT_NIGHT_STAFF",
+            "severity": "error",
+            "dates": ["2026-09-01"],
+            "staff_ids": [],
+            "details": {"available_count": 0, "required_count": 1},
+        }
+    ]
+
+
 def test_generate_allows_day_staffing_shortage_when_required_nights_are_possible() -> None:
     staff_members = [
         {
