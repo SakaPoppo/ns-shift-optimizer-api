@@ -192,11 +192,13 @@ def test_generation_issues_are_json_safe_and_match_django_criteria() -> None:
         "code": "NIGHT_COUNT_IMBALANCE",
         "severity": "warning",
         "dates": [],
-        "staff_ids": [12, 18],
+        "staff_ids": [18],
         "details": {
             "minimum_count": 1,
             "maximum_count": 3,
             "count_difference": 2,
+            "count_difference_threshold": 2,
+            "alerted_count": 1,
         },
     }
     assert issues_by_code["OPTIMIZATION_INCOMPLETE"]["details"] == {
