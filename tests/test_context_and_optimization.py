@@ -8,8 +8,10 @@ from app.constants import (
     SHIFT_DAY,
     SHIFT_NIGHT,
     SHIFT_OFF,
+    SHIFT_OFF_REQUEST,
     SHIFT_PAID_LEAVE,
     SHIFT_SPECIAL_LEAVE,
+    SHIFT_TRAINING,
 )
 from app.context import build_optimization_context
 from app.optimization import (
@@ -99,6 +101,21 @@ def selected_shift_type(output, *, staff_id: int, target_date: date) -> str | No
         if output.solver.Value(shift_var):
             return shift_type
     return None
+
+
+def selected_day_counts(output, *, context) -> list[int]:
+    return [
+        sum(
+            selected_shift_type(
+                output,
+                staff_id=staff_member.id,
+                target_date=target_date,
+            )
+            == SHIFT_DAY
+            for staff_member in context.staff_members
+        )
+        for target_date in context.month_dates
+    ]
 
 
 def test_build_optimization_context_converts_payload_collections() -> None:
@@ -515,3 +532,183 @@ def test_high_required_day_is_filled_when_capacity_allows() -> None:
         == SHIFT_DAY
         for staff_member in staff_members
     ) == 7
+
+
+def test_day_staffing_reserves_high_required_then_rebalances_remaining_days() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
+    context = build_optimization_context(
+        make_request(
+            days=5,
+            staff_members=staff_members,
+            required_day_staff=[6, 6, 6, 4, 3],
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
+        )
+    )
+
+    output = optimize_shift(context)
+    data = output.day_staffing_balance_data
+
+    assert data.total_planned_day_cells == 28
+    assert data.reserved_high_required_cells == 18
+    assert data.remaining_day_cells == 10
+    assert data.remaining_floor_target == 5
+    assert selected_day_counts(output, context=context) == [6, 6, 6, 5, 5]
+
+
+def test_day_staffing_assigns_remaining_extra_cell_to_higher_required_day() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_day_staff=[5, 4, 3],
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert output.day_staffing_balance_data.total_planned_day_cells == 16
+    assert selected_day_counts(output, context=context) == [6, 5, 5]
+
+
+def test_day_staffing_does_not_overfill_high_required_day() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 9)]
+    context = build_optimization_context(
+        make_request(
+            days=4,
+            staff_members=staff_members,
+            required_day_staff=[8, 5, 5, 4],
+            off_days={
+                1: 2,
+                2: 2,
+                3: 1,
+                4: 1,
+                5: 1,
+                6: 1,
+                7: 1,
+                8: 1,
+            },
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert output.day_staffing_balance_data.total_planned_day_cells == 22
+    assert selected_day_counts(output, context=context) == [8, 5, 5, 4]
+
+
+def test_low_required_day_does_not_directly_reduce_day_staffing() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_day_staff=[6, 6, 3],
+            off_days=0,
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert selected_day_counts(output, context=context) == [6, 6, 6]
+
+
+def test_fixed_day_is_included_once_in_total_planned_day_cells() -> None:
+    staff_members = [staff(staff_id=1), staff(staff_id=2)]
+    context = build_optimization_context(
+        make_request(
+            days=2,
+            staff_members=staff_members,
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_DAY}
+            ],
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert output.day_staffing_balance_data.total_planned_day_cells == 4
+    assert selected_day_counts(output, context=context) == [2, 2]
+
+
+def test_night_and_after_night_are_excluded_from_total_planned_day_cells() -> None:
+    staff_members = [staff(staff_id=1), staff(staff_id=2)]
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_night_staff=[1, 0, 0],
+            off_days={1: 1, 2: 0},
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert output.day_staffing_balance_data.total_planned_day_cells == 3
+    assert sum(selected_day_counts(output, context=context)) == 3
+
+
+def test_off_and_fixed_leave_types_are_excluded_from_total_planned_day_cells() -> None:
+    context = build_optimization_context(
+        make_request(
+            days=5,
+            staff_members=[staff(staff_id=1)],
+            off_days=0,
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_OFF},
+                {
+                    "staff_id": 1,
+                    "date": "2026-09-02",
+                    "shift_type": SHIFT_OFF_REQUEST,
+                },
+                {
+                    "staff_id": 1,
+                    "date": "2026-09-03",
+                    "shift_type": SHIFT_PAID_LEAVE,
+                },
+                {
+                    "staff_id": 1,
+                    "date": "2026-09-04",
+                    "shift_type": SHIFT_SPECIAL_LEAVE,
+                },
+                {
+                    "staff_id": 1,
+                    "date": "2026-09-05",
+                    "shift_type": SHIFT_TRAINING,
+                },
+            ],
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert output.day_staffing_balance_data.total_planned_day_cells == 0
+    assert selected_day_counts(output, context=context) == [0, 0, 0, 0, 0]
+
+
+def test_day_ability_phase_preserves_fixed_day_staffing_counts() -> None:
+    staff_members = [
+        {**staff(staff_id=1), "ability_level": 1},
+        {**staff(staff_id=2), "ability_level": 2},
+        {**staff(staff_id=3), "ability_level": 3},
+        {**staff(staff_id=4), "ability_level": 4},
+        {**staff(staff_id=5), "ability_level": 5},
+        {**staff(staff_id=6), "ability_level": 5},
+    ]
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_day_staff=[5, 4, 3],
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert selected_day_counts(output, context=context) == [6, 5, 5]
+    assert [
+        output.solver.Value(count_var)
+        for count_var in output.day_staffing_balance_data.actual_day_count_vars.values()
+    ] == [6, 5, 5]
