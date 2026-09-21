@@ -89,18 +89,43 @@ class NightCountBalanceData:
 
 
 @dataclass
-class AbilityDistributionData:
-    shift_type: str | None = None
-    thresholds: tuple[int, ...] = field(default_factory=tuple)
+class DayAbilityBalanceData:
+    """日勤のLv別構成比と能力合計を評価するCP-SAT変数群。"""
+
+    staff_count: int = 0
+    staff_level_counts: dict[int, int] = field(default_factory=dict)
+    total_staff_ability: int = 0
+    actual_day_count_vars: dict[date, object] = field(default_factory=dict)
+    level_count_vars: dict[tuple[date, int], object] = field(
+        default_factory=dict
+    )
+    level_deviation_vars: dict[tuple[date, int], object] = field(
+        default_factory=dict
+    )
+    daily_ability_total_vars: dict[date, object] = field(
+        default_factory=dict
+    )
+    ability_total_deviation_vars: dict[date, object] = field(
+        default_factory=dict
+    )
+    max_level_deviation: object | None = None
+    total_level_deviation: object | None = None
+    max_ability_total_deviation: object | None = None
+    total_ability_total_deviation: object | None = None
+    objective_score: object | None = None
+
+
+@dataclass
+class NightAbilityBalanceData:
+    """夜勤可能スタッフの平均能力を基準に夜勤能力合計を評価する。"""
+
     eligible_staff_count: int = 0
-    eligible_above_counts: dict[int, int] = field(default_factory=dict)
-    actual_shift_count_vars: dict[date, object] = field(default_factory=dict)
-    threshold_count_vars: dict[tuple[date, int], object] = field(
+    eligible_staff_ability_total: int = 0
+    required_night_counts: dict[date, int] = field(default_factory=dict)
+    daily_ability_total_vars: dict[date, object] = field(
         default_factory=dict
     )
-    deviation_vars: dict[tuple[date, int], object] = field(
-        default_factory=dict
-    )
+    deviation_vars: dict[date, object] = field(default_factory=dict)
     max_deviation: object | None = None
     total_deviation: object | None = None
     objective_score: object | None = None

@@ -19,6 +19,10 @@ from .schemas import (
 from .types import OptimizationContext, OptimizationError, ShiftOptimizationOutput
 
 
+ABILITY_DEVIATION_WARNING_PERCENT = 25
+PERCENT_SCALE = 100
+
+
 def build_generate_shift_response(
     *,
     context: OptimizationContext,
@@ -261,6 +265,9 @@ def _build_generation_issues(
                 )
             )
 
+    if context is not None and shifts is not None:
+        issues.extend(_build_ability_target_issues(context, shifts))
+
     incomplete_items = [
         phase.name
         for phase in optimization.phase_results
@@ -297,6 +304,117 @@ def _build_generation_issues(
                     )
                 )
     return issues
+
+
+def _build_ability_target_issues(
+    context: OptimizationContext,
+    shifts: list[GeneratedShiftOutput],
+) -> list[GenerationIssueResponse]:
+    """Return warning Issues when a daily ability total differs by 25% or more."""
+
+    staff_by_id = {staff.id: staff for staff in context.staff_members}
+    night_eligible_staff = [
+        staff for staff in context.staff_members if staff.can_night_shift
+    ]
+    shifts_by_date = {
+        target_date: [
+            shift for shift in shifts if shift.date == target_date
+        ]
+        for target_date in context.month_dates
+    }
+    issues = []
+    for target_date in context.month_dates:
+        day_shifts = [
+            shift
+            for shift in shifts_by_date[target_date]
+            if shift.shift_type == SHIFT_DAY
+        ]
+        issues.extend(
+            _build_daily_ability_target_issue(
+                target_date=target_date,
+                target_count=len(day_shifts),
+                actual_ability_total=sum(
+                    staff_by_id[shift.staff_id].ability_level
+                    for shift in day_shifts
+                ),
+                population=context.staff_members,
+                below_code="DAY_ABILITY_BELOW_TARGET",
+                above_code="DAY_ABILITY_ABOVE_TARGET",
+            )
+        )
+
+        night_shifts = [
+            shift
+            for shift in shifts_by_date[target_date]
+            if shift.shift_type == SHIFT_NIGHT
+            and staff_by_id[shift.staff_id].can_night_shift
+        ]
+        issues.extend(
+            _build_daily_ability_target_issue(
+                target_date=target_date,
+                target_count=(
+                    context.effective_rules[target_date].required_night_staff
+                ),
+                actual_ability_total=sum(
+                    staff_by_id[shift.staff_id].ability_level
+                    for shift in night_shifts
+                ),
+                population=night_eligible_staff,
+                below_code="NIGHT_ABILITY_BELOW_TARGET",
+                above_code="NIGHT_ABILITY_ABOVE_TARGET",
+            )
+        )
+    return issues
+
+
+def _build_daily_ability_target_issue(
+    *,
+    target_date: date,
+    target_count: int,
+    actual_ability_total: int,
+    population,
+    below_code: str,
+    above_code: str,
+) -> list[GenerationIssueResponse]:
+    """Evaluate one daily ability total using integer cross multiplication."""
+
+    population_count = len(population)
+    population_ability_total = sum(
+        staff.ability_level for staff in population
+    )
+    expected_numerator = target_count * population_ability_total
+    if population_count == 0 or expected_numerator == 0:
+        return []
+
+    actual_numerator = actual_ability_total * population_count
+    deviation_numerator = abs(actual_numerator - expected_numerator)
+    if (
+        deviation_numerator * PERCENT_SCALE
+        < expected_numerator * ABILITY_DEVIATION_WARNING_PERCENT
+    ):
+        return []
+
+    return [
+        GenerationIssueResponse(
+            code=(
+                below_code
+                if actual_numerator < expected_numerator
+                else above_code
+            ),
+            severity="warning",
+            dates=[target_date],
+            details={
+                "date": target_date.isoformat(),
+                "actual_ability_total": actual_ability_total,
+                "expected_ability_total": (
+                    expected_numerator / population_count
+                ),
+                "deviation_rate": (
+                    deviation_numerator / expected_numerator
+                ),
+            },
+        )
+    ]
 
 
 def _build_hard_staffing_issues(

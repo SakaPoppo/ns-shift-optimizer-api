@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 import pytest
+from ortools.sat.python import cp_model
 
 from app.constants import (
     SHIFT_AFTER_NIGHT,
@@ -11,15 +12,20 @@ from app.constants import (
     SHIFT_SPECIAL_LEAVE,
 )
 from app.context import build_optimization_context
-from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES, optimize_shift
+from app.optimization import (
+    SUCCESSFUL_OPTIMIZATION_STATUSES,
+    _build_day_ability_balance_objective,
+    optimize_shift,
+)
 from app.schemas import GenerateShiftRequest
-from app.types import OptimizationError
+from app.types import OptimizationError, OptimizerStaff
 
 
 def make_request(
     *,
     days: int,
     staff_members: list[dict],
+    required_day_staff: int | list[int] = 0,
     required_night_staff: int | list[int] = 0,
     off_days: int | dict[int, int] = 0,
     max_consecutive_work_days: int = 5,
@@ -34,6 +40,11 @@ def make_request(
         if isinstance(required_night_staff, list)
         else [required_night_staff] * days
     )
+    required_days = (
+        required_day_staff
+        if isinstance(required_day_staff, list)
+        else [required_day_staff] * days
+    )
     off_days_by_staff = (
         off_days
         if isinstance(off_days, dict)
@@ -47,7 +58,7 @@ def make_request(
             "effective_rules": [
                 {
                     "date": target_date.isoformat(),
-                    "required_day_staff": 0,
+                    "required_day_staff": required_days[index],
                     "required_night_staff": required_nights[index],
                     "required_leader_staff": 0,
                     "min_ability_level": None,
@@ -129,6 +140,146 @@ def test_optimize_shift_solves_a_small_context() -> None:
 
     assert output.solver_status in SUCCESSFUL_OPTIMIZATION_STATUSES
     assert len(output.phase_results) == 5
+
+
+def test_day_ability_balance_spreads_level_composition_across_days() -> None:
+    staff_members = [
+        {
+            **staff(staff_id=index),
+            "ability_level": ability_level,
+        }
+        for index, ability_level in enumerate((1, 1, 3, 3, 5, 5), start=1)
+    ]
+    context = build_optimization_context(
+        make_request(
+            days=2,
+            staff_members=staff_members,
+            required_day_staff=3,
+            off_days=1,
+        )
+    )
+
+    output = optimize_shift(context)
+
+    for target_date in context.month_dates:
+        selected_levels = [
+            staff_member.ability_level
+            for staff_member in context.staff_members
+            if selected_shift_type(
+                output,
+                staff_id=staff_member.id,
+                target_date=target_date,
+            )
+            == SHIFT_DAY
+        ]
+        assert sorted(selected_levels) == [1, 3, 5]
+
+
+def test_day_ability_balance_counts_levels_with_different_daily_headcounts() -> None:
+    model = cp_model.CpModel()
+    first_date = date(2026, 9, 1)
+    second_date = date(2026, 9, 2)
+    staff_members = [
+        OptimizerStaff(1, "member", 1, True, ()),
+        OptimizerStaff(2, "member", 3, True, ()),
+        OptimizerStaff(3, "member", 5, True, ()),
+    ]
+    shift_vars = {
+        (staff_member.id, target_date): {
+            SHIFT_DAY: model.NewBoolVar(
+                f"day_{staff_member.id}_{target_date.isoformat()}"
+            )
+        }
+        for staff_member in staff_members
+        for target_date in (first_date, second_date)
+    }
+    actual_day_count_vars = {}
+    for target_date in (first_date, second_date):
+        count_var = model.NewIntVar(0, 3, f"day_count_{target_date.isoformat()}")
+        model.Add(
+            count_var
+            == sum(
+                shift_vars[(staff_member.id, target_date)][SHIFT_DAY]
+                for staff_member in staff_members
+            )
+        )
+        actual_day_count_vars[target_date] = count_var
+    for staff_member in staff_members:
+        model.Add(
+            shift_vars[(staff_member.id, first_date)][SHIFT_DAY]
+            == int(staff_member.id in {1, 2})
+        )
+        model.Add(
+            shift_vars[(staff_member.id, second_date)][SHIFT_DAY]
+            == int(staff_member.id == 3)
+        )
+
+    data = _build_day_ability_balance_objective(
+        model=model,
+        month_dates=[first_date, second_date],
+        shift_vars=shift_vars,
+        staff_members=staff_members,
+        actual_day_count_vars=actual_day_count_vars,
+    )
+    solver = cp_model.CpSolver()
+
+    assert solver.Solve(model) in {
+        cp_model.OPTIMAL,
+        cp_model.FEASIBLE,
+    }
+    assert data.staff_level_counts == {1: 1, 2: 0, 3: 1, 4: 0, 5: 1}
+    assert solver.Value(data.level_count_vars[(first_date, 1)]) == 1
+    assert solver.Value(data.level_count_vars[(first_date, 3)]) == 1
+    assert solver.Value(data.level_count_vars[(second_date, 5)]) == 1
+    assert solver.Value(data.daily_ability_total_vars[first_date]) == 4
+    assert solver.Value(data.daily_ability_total_vars[second_date]) == 5
+
+
+def test_night_ability_balance_uses_only_night_eligible_average() -> None:
+    staff_members = [
+        {
+            **staff(staff_id=index),
+            "ability_level": ability_level,
+        }
+        for index, ability_level in enumerate((2, 3, 4, 5), start=1)
+    ]
+    staff_members.append(
+        {
+            **staff(staff_id=5, can_night_shift=False),
+            "ability_level": 5,
+        }
+    )
+    context = build_optimization_context(
+        make_request(
+            days=2,
+            staff_members=staff_members,
+            required_night_staff=2,
+        )
+    )
+
+    output = optimize_shift(context)
+
+    nightly_ability_totals = []
+    night_counts = {staff_member.id: 0 for staff_member in context.staff_members}
+    for target_date in context.month_dates:
+        night_staff = [
+            staff_member
+            for staff_member in context.staff_members
+            if selected_shift_type(
+                output,
+                staff_id=staff_member.id,
+                target_date=target_date,
+            )
+            == SHIFT_NIGHT
+        ]
+        nightly_ability_totals.append(
+            sum(staff_member.ability_level for staff_member in night_staff)
+        )
+        for staff_member in night_staff:
+            night_counts[staff_member.id] += 1
+
+    assert nightly_ability_totals == [7, 7]
+    assert night_counts == {1: 1, 2: 1, 3: 1, 4: 1, 5: 0}
 
 
 def test_optimize_shift_preserves_fixed_night_assignment() -> None:

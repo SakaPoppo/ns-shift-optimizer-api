@@ -6,6 +6,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
+from app.context import build_optimization_context
 from app.constants import (
     SHIFT_AFTER_NIGHT,
     SHIFT_DAY,
@@ -18,7 +19,12 @@ from app.constants import (
 )
 from app.main import app
 from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES
-from app.results import _build_generation_issues
+from app.results import (
+    _build_ability_target_issues,
+    _build_daily_ability_target_issue,
+    _build_generation_issues,
+)
+from app.schemas import GenerateShiftRequest, GeneratedShiftOutput
 
 
 client = TestClient(app)
@@ -208,6 +214,140 @@ def test_generation_issues_are_json_safe_and_match_django_criteria() -> None:
             "long_streak",
         ]
     }
+
+
+def test_ability_target_issues_classify_day_and_night_deviations() -> None:
+    day_context = build_optimization_context(
+        GenerateShiftRequest.model_validate(
+            make_payload(
+                days=1,
+                staff_members=[
+                    {
+                        "id": index,
+                        "role": "member",
+                        "ability_level": ability_level,
+                        "can_night_shift": True,
+                        "regular_days_off": [],
+                    }
+                    for index, ability_level in enumerate((1, 3, 4, 4), start=1)
+                ],
+            )
+        )
+    )
+    target_date = day_context.month_dates[0]
+    day_issues = _build_ability_target_issues(
+        day_context,
+        [
+            GeneratedShiftOutput(
+                staff_id=1, date=target_date, shift_type=SHIFT_DAY
+            ),
+            *[
+                GeneratedShiftOutput(
+                    staff_id=staff_id, date=target_date, shift_type=SHIFT_OFF
+                )
+                for staff_id in (2, 3, 4)
+            ],
+        ],
+    )
+    assert day_issues[0].code == "DAY_ABILITY_BELOW_TARGET"
+    assert day_issues[0].details == {
+        "date": "2026-09-01",
+        "actual_ability_total": 1,
+        "expected_ability_total": 3.0,
+        "deviation_rate": pytest.approx(2 / 3),
+    }
+
+    night_context = build_optimization_context(
+        GenerateShiftRequest.model_validate(
+            make_payload(
+                days=1,
+                required_night_staff=[2],
+                staff_members=[
+                    {
+                        "id": index,
+                        "role": "member",
+                        "ability_level": ability_level,
+                        "can_night_shift": True,
+                        "regular_days_off": [],
+                    }
+                    for index, ability_level in enumerate((2, 3, 4, 5), start=1)
+                ],
+            )
+        )
+    )
+    night_date = night_context.month_dates[0]
+    night_issues = _build_ability_target_issues(
+        night_context,
+        [
+            GeneratedShiftOutput(
+                staff_id=1, date=night_date, shift_type=SHIFT_NIGHT
+            ),
+            GeneratedShiftOutput(
+                staff_id=2, date=night_date, shift_type=SHIFT_NIGHT
+            ),
+            *[
+                GeneratedShiftOutput(
+                    staff_id=staff_id, date=night_date, shift_type=SHIFT_OFF
+                )
+                for staff_id in (3, 4)
+            ],
+        ],
+    )
+    assert night_issues[0].code == "NIGHT_ABILITY_BELOW_TARGET"
+    assert night_issues[0].details == {
+        "date": "2026-09-01",
+        "actual_ability_total": 5,
+        "expected_ability_total": 7.0,
+        "deviation_rate": pytest.approx(2 / 7),
+    }
+
+    above_issues = _build_ability_target_issues(
+        night_context,
+        [
+            GeneratedShiftOutput(
+                staff_id=3, date=night_date, shift_type=SHIFT_NIGHT
+            ),
+            GeneratedShiftOutput(
+                staff_id=4, date=night_date, shift_type=SHIFT_NIGHT
+            ),
+            *[
+                GeneratedShiftOutput(
+                    staff_id=staff_id, date=night_date, shift_type=SHIFT_OFF
+                )
+                for staff_id in (1, 2)
+            ],
+        ],
+    )
+    assert above_issues[0].code == "NIGHT_ABILITY_ABOVE_TARGET"
+
+
+@pytest.mark.parametrize(
+    ("population_ability_total", "expects_issue"),
+    [(399, False), (400, True), (401, True)],
+)
+def test_ability_target_issue_uses_25_percent_boundary(
+    population_ability_total: int,
+    expects_issue: bool,
+) -> None:
+    population = [
+        SimpleNamespace(ability_level=4) for _ in range(100)
+    ]
+    population[0] = SimpleNamespace(
+        ability_level=population_ability_total - 396
+    )
+
+    issues = _build_daily_ability_target_issue(
+        target_date=date(2026, 9, 1),
+        target_count=1,
+        actual_ability_total=3,
+        population=population,
+        below_code="BELOW",
+        above_code="ABOVE",
+    )
+
+    assert bool(issues) is expects_issue
+    if expects_issue:
+        assert issues[0].code == "BELOW"
 
 
 def test_generate_preserves_fixed_night_and_its_after_night_constraint() -> None:
