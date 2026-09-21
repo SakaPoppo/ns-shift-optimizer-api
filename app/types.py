@@ -65,17 +65,25 @@ class DayStaffingBalanceData:
     actual_day_count_vars: dict[date, object] = field(default_factory=dict)
     required_day_counts: dict[date, int] = field(default_factory=dict)
     day_staffing_delta_vars: dict[date, object] = field(default_factory=dict)
-    minimum_delta: object | None = None
-    maximum_delta: object | None = None
-    delta_range: object | None = None
-    shortage_vars: dict[date, object] = field(default_factory=dict)
-    total_shortage: object | None = None
+    total_planned_day_cells: int = 0
+    day_count: int = 0
+    high_required_day_counts: dict[date, int] = field(default_factory=dict)
+    reserved_high_required_cells: int = 0
+    remaining_day_cells: int = 0
+    remaining_dates: tuple[date, ...] = ()
+    remaining_floor_target: int = 0
+    remaining_extra_cells: int = 0
+    high_required_deviation_vars: dict[date, object] = field(
+        default_factory=dict
+    )
+    maximum_high_required_deviation: object | None = None
+    total_high_required_deviation: object | None = None
+    remaining_day_count_range: object | None = None
+    remaining_allocation_priority_penalty: object | None = None
     minimum_actual_day_count: object | None = None
     maximum_actual_day_count: object | None = None
     actual_day_count_range: object | None = None
     total_actual_day_count: object | None = None
-    total_required_day_count: int = 0
-    total_delta: object | None = None
     objective_score: object | None = None
 
 

@@ -4,7 +4,7 @@
 
 - 必要リーダー人数・必要能力スタッフ人数のハード制約
 - 最大連勤数のハード制約
-- 必要人数との差分を基準に日勤枠を一括均等化する目的関数
+- 月間の日勤予定セル総数を日別へ優先配分する目的関数
 - 月間夜勤回数差などの公平性目的関数
 """
 
@@ -121,6 +121,8 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
         month_dates=context.month_dates,
         shift_vars=shift_vars,
         effective_rules=context.effective_rules,
+        fixed_assignments=context.fixed_assignments,
+        effective_off_days=context.effective_off_days,
     )
     day_ability_balance_data = _build_day_ability_balance_objective(
         model=model,
@@ -737,13 +739,85 @@ def _build_day_staffing_balance_data(
     month_dates,
     shift_vars,
     effective_rules,
+    fixed_assignments,
+    effective_off_days,
 ) -> DayStaffingBalanceData:
-    """日勤不足と実人数の月内差を、優先順に最小化するデータを構築する。"""
+    """月間の日勤予定セル総数を、日別へ優先順に配分する。"""
 
-    data = DayStaffingBalanceData()
+    month_dates = list(month_dates)
+    staff_members = list(staff_members)
     max_count = len(staff_members)
-    delta_lower_bounds = []
-    delta_upper_bounds = []
+    total_planned_day_cells = _calculate_total_planned_day_cells(
+        staff_members=staff_members,
+        month_dates=month_dates,
+        fixed_assignments=fixed_assignments,
+        effective_rules=effective_rules,
+        effective_off_days=effective_off_days,
+    )
+    average_numerator = total_planned_day_cells
+    day_count = len(month_dates)
+    required_day_counts = {
+        target_date: effective_rules[target_date].required_day_staff
+        for target_date in month_dates
+    }
+    high_required_day_counts = {
+        target_date: required_count
+        for target_date, required_count in required_day_counts.items()
+        if required_count * day_count > average_numerator
+    }
+    reserved_high_required_cells = sum(high_required_day_counts.values())
+    remaining_dates = tuple(
+        target_date
+        for target_date in month_dates
+        if target_date not in high_required_day_counts
+    )
+    remaining_day_cells = max(
+        total_planned_day_cells - reserved_high_required_cells,
+        0,
+    )
+    remaining_day_count = len(remaining_dates)
+    remaining_floor_target = (
+        remaining_day_cells // remaining_day_count
+        if remaining_day_count
+        else 0
+    )
+    remaining_extra_cells = (
+        remaining_day_cells % remaining_day_count
+        if remaining_day_count
+        else 0
+    )
+    data = DayStaffingBalanceData(
+        required_day_counts=required_day_counts,
+        total_planned_day_cells=total_planned_day_cells,
+        day_count=day_count,
+        high_required_day_counts=high_required_day_counts,
+        reserved_high_required_cells=reserved_high_required_cells,
+        remaining_day_cells=remaining_day_cells,
+        remaining_dates=remaining_dates,
+        remaining_floor_target=remaining_floor_target,
+        remaining_extra_cells=remaining_extra_cells,
+    )
+
+    logger.info(
+        "day staffing calculation total_planned_day_cells=%s day_count=%s "
+        "average_day_staff=%.3f required_day_staff=%s "
+        "high_required_dates=%s reserved_high_required_cells=%s "
+        "remaining_day_cells=%s remaining_day_count=%s "
+        "remaining_floor_target=%s remaining_extra_cells=%s",
+        total_planned_day_cells,
+        day_count,
+        total_planned_day_cells / day_count if day_count else 0,
+        [required_day_counts[target_date] for target_date in month_dates],
+        {
+            target_date.isoformat(): required_count
+            for target_date, required_count in high_required_day_counts.items()
+        },
+        reserved_high_required_cells,
+        remaining_day_cells,
+        remaining_day_count,
+        remaining_floor_target,
+        remaining_extra_cells,
+    )
 
     for target_date in month_dates:
         actual_day_count = model.NewIntVar(
@@ -758,7 +832,7 @@ def _build_day_staffing_balance_data(
                 for staff_member in staff_members
             )
         )
-        required_day_count = effective_rules[target_date].required_day_staff
+        required_day_count = required_day_counts[target_date]
         delta_lower_bound = -required_day_count
         delta_upper_bound = max_count - required_day_count
         delta_var = model.NewIntVar(
@@ -767,66 +841,120 @@ def _build_day_staffing_balance_data(
             f"day_staffing_delta_{target_date.isoformat()}",
         )
         model.Add(delta_var == actual_day_count - required_day_count)
-        shortage_var = model.NewIntVar(
-            0,
-            required_day_count,
-            f"day_staffing_shortage_{target_date.isoformat()}",
-        )
-        model.AddMaxEquality(
-            shortage_var,
-            [required_day_count - actual_day_count, 0],
-        )
 
         data.actual_day_count_vars[target_date] = actual_day_count
-        data.required_day_counts[target_date] = required_day_count
         data.day_staffing_delta_vars[target_date] = delta_var
-        data.shortage_vars[target_date] = shortage_var
-        delta_lower_bounds.append(delta_lower_bound)
-        delta_upper_bounds.append(delta_upper_bound)
-
-    minimum_delta_lower_bound = min(delta_lower_bounds)
-    minimum_delta_upper_bound = min(delta_upper_bounds)
-    maximum_delta_lower_bound = max(delta_lower_bounds)
-    maximum_delta_upper_bound = max(delta_upper_bounds)
-    data.minimum_delta = model.NewIntVar(
-        minimum_delta_lower_bound,
-        minimum_delta_upper_bound,
-        "minimum_day_staffing_delta",
-    )
-    data.maximum_delta = model.NewIntVar(
-        maximum_delta_lower_bound,
-        maximum_delta_upper_bound,
-        "maximum_day_staffing_delta",
-    )
-    model.AddMinEquality(
-        data.minimum_delta,
-        list(data.day_staffing_delta_vars.values()),
-    )
-    model.AddMaxEquality(
-        data.maximum_delta,
-        list(data.day_staffing_delta_vars.values()),
-    )
-    delta_range_upper_bound = (
-        maximum_delta_upper_bound - minimum_delta_lower_bound
-    )
-    data.delta_range = model.NewIntVar(
-        0,
-        delta_range_upper_bound,
-        "day_staffing_delta_range",
-    )
-    model.Add(data.delta_range == data.maximum_delta - data.minimum_delta)
 
     data.total_actual_day_count = sum(data.actual_day_count_vars.values())
-    data.total_required_day_count = sum(data.required_day_counts.values())
-    data.total_delta = (
-        data.total_actual_day_count - data.total_required_day_count
+    model.Add(
+        data.total_actual_day_count == data.total_planned_day_cells
     )
-    data.total_shortage = model.NewIntVar(
+
+    high_deviation_upper_bound = max(
+        max_count,
+        max(high_required_day_counts.values(), default=0),
+    )
+    for target_date, required_day_count in high_required_day_counts.items():
+        deviation = model.NewIntVar(
+            0,
+            high_deviation_upper_bound,
+            f"high_required_day_deviation_{target_date.isoformat()}",
+        )
+        model.AddAbsEquality(
+            deviation,
+            data.actual_day_count_vars[target_date] - required_day_count,
+        )
+        data.high_required_deviation_vars[target_date] = deviation
+    data.maximum_high_required_deviation = _add_max_or_zero(
+        model,
+        list(data.high_required_deviation_vars.values()),
+        high_deviation_upper_bound,
+        "maximum_high_required_day_deviation",
+    )
+    total_high_deviation_upper_bound = (
+        len(high_required_day_counts) * high_deviation_upper_bound
+    )
+    data.total_high_required_deviation = model.NewIntVar(
         0,
-        data.total_required_day_count,
-        "total_day_staffing_shortage",
+        total_high_deviation_upper_bound,
+        "total_high_required_day_deviation",
     )
-    model.Add(data.total_shortage == sum(data.shortage_vars.values()))
+    model.Add(
+        data.total_high_required_deviation
+        == sum(data.high_required_deviation_vars.values())
+    )
+
+    remaining_priority_terms = []
+    if remaining_dates:
+        remaining_minimum = model.NewIntVar(
+            0, max_count, "remaining_day_count_minimum"
+        )
+        remaining_maximum = model.NewIntVar(
+            0, max_count, "remaining_day_count_maximum"
+        )
+        remaining_actual_counts = [
+            data.actual_day_count_vars[target_date]
+            for target_date in remaining_dates
+        ]
+        model.AddMinEquality(remaining_minimum, remaining_actual_counts)
+        model.AddMaxEquality(remaining_maximum, remaining_actual_counts)
+        data.remaining_day_count_range = model.NewIntVar(
+            0, max_count, "remaining_day_count_range"
+        )
+        model.Add(
+            data.remaining_day_count_range
+            == remaining_maximum - remaining_minimum
+        )
+
+        highest_remaining_required = max(
+            required_day_counts[target_date] for target_date in remaining_dates
+        )
+        for target_date in remaining_dates:
+            additional_day_count = model.NewIntVar(
+                0,
+                max_count,
+                f"remaining_day_additional_count_{target_date.isoformat()}",
+            )
+            model.AddMaxEquality(
+                additional_day_count,
+                [
+                    data.actual_day_count_vars[target_date]
+                    - remaining_floor_target,
+                    0,
+                ],
+            )
+            priority_weight = (
+                highest_remaining_required - required_day_counts[target_date]
+            )
+            if priority_weight:
+                remaining_priority_terms.append(
+                    additional_day_count * priority_weight
+                )
+    else:
+        data.remaining_day_count_range = 0
+
+    remaining_required_spread = (
+        max(required_day_counts[target_date] for target_date in remaining_dates)
+        - min(required_day_counts[target_date] for target_date in remaining_dates)
+        if remaining_dates
+        else 0
+    )
+    priority_penalty_upper_bound = (
+        len(remaining_dates) * max_count * remaining_required_spread
+    )
+    if remaining_priority_terms:
+        data.remaining_allocation_priority_penalty = model.NewIntVar(
+            0,
+            priority_penalty_upper_bound,
+            "remaining_day_allocation_priority_penalty",
+        )
+        model.Add(
+            data.remaining_allocation_priority_penalty
+            == sum(remaining_priority_terms)
+        )
+    else:
+        data.remaining_allocation_priority_penalty = 0
+
     data.minimum_actual_day_count = model.NewIntVar(
         0,
         max_count,
@@ -856,11 +984,88 @@ def _build_day_staffing_balance_data(
     )
     data.objective_score = _build_lexicographic_score(
         [
-            (data.total_shortage, data.total_required_day_count),
+            (
+                data.maximum_high_required_deviation,
+                high_deviation_upper_bound,
+            ),
+            (
+                data.total_high_required_deviation,
+                total_high_deviation_upper_bound,
+            ),
+            (data.remaining_day_count_range, max_count),
+            (
+                data.remaining_allocation_priority_penalty,
+                priority_penalty_upper_bound,
+            ),
             (data.actual_day_count_range, max_count),
         ]
     )
     return data
+
+
+def _calculate_total_planned_day_cells(
+    *,
+    staff_members,
+    month_dates,
+    fixed_assignments,
+    effective_rules,
+    effective_off_days,
+) -> int:
+    """月休日・夜勤・明け・固定の非日勤セルを除いた日勤総数を返す。"""
+
+    month_dates = list(month_dates)
+    staff_members = list(staff_members)
+    if not month_dates:
+        return 0
+
+    fixed_non_day_cells = sum(
+        1
+        for staff_member in staff_members
+        for target_date in month_dates
+        if (
+            (
+                fixed_shift_type := fixed_assignments.get(
+                    (staff_member.id, target_date)
+                )
+            )
+            is not None
+            and fixed_shift_type not in GENERATABLE_SHIFT_TYPES
+            and fixed_shift_type != SHIFT_OFF_REQUEST
+        )
+    )
+    monthly_off_cells = sum(
+        max(
+            effective_off_days[staff_member.id],
+            sum(
+                fixed_assignments.get((staff_member.id, target_date))
+                in MONTHLY_OFF_SHIFT_TYPES
+                for target_date in month_dates
+            ),
+        )
+        for staff_member in staff_members
+    )
+    required_night_cells = sum(
+        effective_rules[target_date].required_night_staff
+        for target_date in month_dates
+    )
+    first_date = month_dates[0]
+    boundary_after_night_cells = sum(
+        fixed_assignments.get((staff_member.id, first_date))
+        == SHIFT_AFTER_NIGHT
+        for staff_member in staff_members
+    )
+    in_month_after_night_cells = sum(
+        effective_rules[target_date].required_night_staff
+        for target_date in month_dates[:-1]
+    )
+    return (
+        len(staff_members) * len(month_dates)
+        - fixed_non_day_cells
+        - monthly_off_cells
+        - required_night_cells
+        - boundary_after_night_cells
+        - in_month_after_night_cells
+    )
 
 
 def _add_staffing_safety_constraints(
