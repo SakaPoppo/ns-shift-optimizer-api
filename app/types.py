@@ -68,6 +68,11 @@ class DayStaffingBalanceData:
     minimum_delta: object | None = None
     maximum_delta: object | None = None
     delta_range: object | None = None
+    shortage_vars: dict[date, object] = field(default_factory=dict)
+    total_shortage: object | None = None
+    minimum_actual_day_count: object | None = None
+    maximum_actual_day_count: object | None = None
+    actual_day_count_range: object | None = None
     total_actual_day_count: object | None = None
     total_required_day_count: int = 0
     total_delta: object | None = None

@@ -251,3 +251,116 @@ def test_user_override_work_streak_is_preserved_then_forces_generated_off() -> N
     assert selected_shift_type(
         output, staff_id=1, target_date=context.month_dates[3]
     ) == SHIFT_OFF
+
+
+def test_manual_only_night_after_day_is_preserved() -> None:
+    override_keys = [
+        {"staff_id": 1, "date": f"2026-09-0{day}"}
+        for day in (1, 2, 3)
+    ]
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=[staff(staff_id=1)],
+            required_night_staff=[1, 0, 0],
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-01", "shift_type": SHIFT_NIGHT},
+                {"staff_id": 1, "date": "2026-09-02", "shift_type": SHIFT_AFTER_NIGHT},
+                {"staff_id": 1, "date": "2026-09-03", "shift_type": SHIFT_DAY},
+            ],
+            user_override_assignment_keys=override_keys,
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert [
+        selected_shift_type(output, staff_id=1, target_date=target_date)
+        for target_date in context.month_dates
+    ] == [SHIFT_NIGHT, SHIFT_AFTER_NIGHT, SHIFT_DAY]
+
+
+def test_generated_night_cannot_use_manual_day_after_after_night() -> None:
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=[staff(staff_id=1), staff(staff_id=2)],
+            required_night_staff=[1, 0, 0],
+            off_days=1,
+            fixed_assignments=[
+                {"staff_id": 1, "date": "2026-09-03", "shift_type": SHIFT_DAY},
+            ],
+            user_override_assignment_keys=[
+                {"staff_id": 1, "date": "2026-09-03"},
+            ],
+        )
+    )
+
+    output = optimize_shift(context)
+
+    assert selected_shift_type(
+        output, staff_id=1, target_date=context.month_dates[0]
+    ) != SHIFT_NIGHT
+    assert [
+        selected_shift_type(output, staff_id=2, target_date=target_date)
+        for target_date in context.month_dates
+    ] == [SHIFT_NIGHT, SHIFT_AFTER_NIGHT, SHIFT_OFF]
+
+
+def test_low_required_day_does_not_reduce_actual_day_staffing() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
+    request = make_request(
+        days=3,
+        staff_members=staff_members,
+        off_days=0,
+    )
+    payload = request.model_dump(mode="json")
+    for rule, required_day_staff in zip(
+        payload["effective_rules"],
+        [5, 5, 3],
+    ):
+        rule["required_day_staff"] = required_day_staff
+    context = build_optimization_context(
+        GenerateShiftRequest.model_validate(payload)
+    )
+
+    output = optimize_shift(context)
+
+    assert [
+        sum(
+            selected_shift_type(
+                output,
+                staff_id=staff_member["id"],
+                target_date=target_date,
+            )
+            == SHIFT_DAY
+            for staff_member in staff_members
+        )
+        for target_date in context.month_dates
+    ] == [6, 6, 6]
+
+
+def test_high_required_day_is_filled_when_capacity_allows() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 8)]
+    request = make_request(
+        days=3,
+        staff_members=staff_members,
+        off_days=0,
+    )
+    payload = request.model_dump(mode="json")
+    payload["effective_rules"][1]["required_day_staff"] = 7
+    context = build_optimization_context(
+        GenerateShiftRequest.model_validate(payload)
+    )
+
+    output = optimize_shift(context)
+
+    assert sum(
+        selected_shift_type(
+            output,
+            staff_id=staff_member["id"],
+            target_date=context.month_dates[1],
+        )
+        == SHIFT_DAY
+        for staff_member in staff_members
+    ) == 7

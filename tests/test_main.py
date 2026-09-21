@@ -514,6 +514,31 @@ def test_generate_allows_day_staffing_shortage_when_required_nights_are_possible
     ]
 
 
+def test_generate_reports_day_shortage_without_becoming_infeasible() -> None:
+    staff_members = [
+        {
+            "id": staff_id,
+            "role": "leader" if staff_id == 1 else "member",
+            "ability_level": 3,
+            "can_night_shift": True,
+            "regular_days_off": [],
+        }
+        for staff_id in range(1, 7)
+    ]
+    payload = make_payload(days=1, staff_members=staff_members)
+    payload["effective_rules"][0]["required_day_staff"] = 7
+
+    response = client.post("/generate", json=payload, headers=api_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert sum(shift["shift_type"] == SHIFT_DAY for shift in body["shifts"]) == 6
+    assert "DAY_STAFFING_BELOW_REQUIRED" in {
+        issue["code"] for issue in body["issues"]
+    }
+
+
 def test_generate_warns_when_fixed_monthly_off_count_exceeds_configuration() -> None:
     staff_member = {
         "id": 1,
