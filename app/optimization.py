@@ -618,6 +618,15 @@ def _add_night_pattern_constraints(
             third_date = month_dates[index + 2]
             third_key = (staff_member.id, third_date)
             third_fixed_shift_type = fixed_assignments.get(third_key)
+            night_sequence_keys = (
+                current_key,
+                next_key,
+                third_key,
+            )
+            is_manual_only_night_sequence = all(
+                key in user_override_assignment_keys
+                for key in night_sequence_keys
+            )
             rule = effective_rules[target_date]
 
             if rule.night_shift_next_day_off:
@@ -626,7 +635,7 @@ def _add_night_pattern_constraints(
                 if third_fixed_shift_type is not None:
                     if (
                         third_fixed_shift_type != SHIFT_OFF
-                        and third_key not in user_override_assignment_keys
+                        and not is_manual_only_night_sequence
                     ):
                         model.Add(night_var == 0)
                     continue
@@ -732,7 +741,7 @@ def _build_day_staffing_balance_data(
     shift_vars,
     effective_rules,
 ) -> DayStaffingBalanceData:
-    """必要人数との差分と、月全体の差分幅・集計を構築する。"""
+    """日勤不足と実人数の月内差を、優先順に最小化するデータを構築する。"""
 
     data = DayStaffingBalanceData()
     max_count = len(staff_members)
@@ -761,10 +770,20 @@ def _build_day_staffing_balance_data(
             f"day_staffing_delta_{target_date.isoformat()}",
         )
         model.Add(delta_var == actual_day_count - required_day_count)
+        shortage_var = model.NewIntVar(
+            0,
+            required_day_count,
+            f"day_staffing_shortage_{target_date.isoformat()}",
+        )
+        model.AddMaxEquality(
+            shortage_var,
+            [required_day_count - actual_day_count, 0],
+        )
 
         data.actual_day_count_vars[target_date] = actual_day_count
         data.required_day_counts[target_date] = required_day_count
         data.day_staffing_delta_vars[target_date] = delta_var
+        data.shortage_vars[target_date] = shortage_var
         delta_lower_bounds.append(delta_lower_bound)
         delta_upper_bounds.append(delta_upper_bound)
 
@@ -805,7 +824,45 @@ def _build_day_staffing_balance_data(
     data.total_delta = (
         data.total_actual_day_count - data.total_required_day_count
     )
-    data.objective_score = data.delta_range
+    data.total_shortage = model.NewIntVar(
+        0,
+        data.total_required_day_count,
+        "total_day_staffing_shortage",
+    )
+    model.Add(data.total_shortage == sum(data.shortage_vars.values()))
+    data.minimum_actual_day_count = model.NewIntVar(
+        0,
+        max_count,
+        "minimum_actual_day_count",
+    )
+    data.maximum_actual_day_count = model.NewIntVar(
+        0,
+        max_count,
+        "maximum_actual_day_count",
+    )
+    model.AddMinEquality(
+        data.minimum_actual_day_count,
+        list(data.actual_day_count_vars.values()),
+    )
+    model.AddMaxEquality(
+        data.maximum_actual_day_count,
+        list(data.actual_day_count_vars.values()),
+    )
+    data.actual_day_count_range = model.NewIntVar(
+        0,
+        max_count,
+        "actual_day_count_range",
+    )
+    model.Add(
+        data.actual_day_count_range
+        == data.maximum_actual_day_count - data.minimum_actual_day_count
+    )
+    data.objective_score = _build_lexicographic_score(
+        [
+            (data.total_shortage, data.total_required_day_count),
+            (data.actual_day_count_range, max_count),
+        ]
+    )
     return data
 
 
