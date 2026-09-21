@@ -27,6 +27,7 @@ class EffectiveRule:
     """Final, date-specific shift conditions resolved by Ns Shift."""
 
     required_day_staff: int
+    required_day_staff_override: int | None
     required_night_staff: int
     required_leader_staff: int
     min_ability_level: int | None
@@ -67,19 +68,21 @@ class DayStaffingBalanceData:
     day_staffing_delta_vars: dict[date, object] = field(default_factory=dict)
     total_planned_day_cells: int = 0
     day_count: int = 0
-    high_required_day_counts: dict[date, int] = field(default_factory=dict)
-    reserved_high_required_cells: int = 0
-    remaining_day_cells: int = 0
-    remaining_dates: tuple[date, ...] = ()
-    remaining_floor_target: int = 0
-    remaining_extra_cells: int = 0
-    high_required_deviation_vars: dict[date, object] = field(
+    high_day_staffing_overrides: dict[date, int] = field(default_factory=dict)
+    reserved_high_override_cells: int = 0
+    normal_day_cells: int = 0
+    normal_dates: tuple[date, ...] = ()
+    normal_floor_target: int = 0
+    normal_ceil_target: int = 0
+    normal_extra_cells: int = 0
+    high_override_deviation_vars: dict[date, object] = field(
         default_factory=dict
     )
-    maximum_high_required_deviation: object | None = None
-    total_high_required_deviation: object | None = None
-    remaining_day_count_range: object | None = None
-    remaining_allocation_priority_penalty: object | None = None
+    maximum_high_override_deviation: object | None = None
+    total_high_override_deviation: object | None = None
+    normal_day_count_range: object | None = None
+    normal_target_band_deviation: object | None = None
+    low_override_ceil_penalty: object | None = None
     minimum_actual_day_count: object | None = None
     maximum_actual_day_count: object | None = None
     actual_day_count_range: object | None = None

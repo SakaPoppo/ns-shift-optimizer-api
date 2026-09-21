@@ -34,6 +34,7 @@ def build_optimization_context(request: GenerateShiftRequest) -> OptimizationCon
         effective_rules={
             rule.date: EffectiveRule(
                 required_day_staff=rule.required_day_staff,
+                required_day_staff_override=rule.required_day_staff_override,
                 required_night_staff=rule.required_night_staff,
                 required_leader_staff=rule.required_leader_staff,
                 min_ability_level=rule.min_ability_level,

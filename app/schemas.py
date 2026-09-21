@@ -34,6 +34,7 @@ class EffectiveRuleInput(BaseModel):
 
     date: date
     required_day_staff: int
+    required_day_staff_override: int | None = None
     required_night_staff: int
     required_leader_staff: int
     min_ability_level: int | None

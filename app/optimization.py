@@ -204,6 +204,7 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
         ),
         phase_definitions=phase_definitions,
     )
+    _log_phase_summary(phase_results)
 
     return ShiftOptimizationOutput(
         solver=solver,
@@ -420,6 +421,24 @@ def _run_optimization_phases(
         last_successful_status,
     )
     return phase_results, last_successful_solver, last_successful_status
+
+
+def _log_phase_summary(phase_results: list[OptimizationPhaseResult]) -> None:
+    """最適化フェーズごとの到達状態と、最適性未証明の一覧を記録する。"""
+
+    logger.info("optimization phase summary")
+    for phase in phase_results:
+        logger.info(
+            "optimization phase name=%s status=%s optimal=%s objective_value=%s",
+            phase.name,
+            phase.status,
+            phase.optimal,
+            phase.objective_value,
+        )
+    logger.info(
+        "optimization non_optimal_phases=%s",
+        [phase.name for phase in phase_results if not phase.optimal],
+    )
 
 
 def _new_solver(max_time_seconds: int) -> cp_model.CpSolver:
@@ -754,69 +773,84 @@ def _build_day_staffing_balance_data(
         effective_rules=effective_rules,
         effective_off_days=effective_off_days,
     )
-    average_numerator = total_planned_day_cells
     day_count = len(month_dates)
     required_day_counts = {
         target_date: effective_rules[target_date].required_day_staff
         for target_date in month_dates
     }
-    high_required_day_counts = {
-        target_date: required_count
-        for target_date, required_count in required_day_counts.items()
-        if required_count * day_count > average_numerator
+    day_staffing_overrides = {
+        target_date: effective_rules[target_date].required_day_staff_override
+        for target_date in month_dates
+        if effective_rules[target_date].required_day_staff_override is not None
     }
-    reserved_high_required_cells = sum(high_required_day_counts.values())
-    remaining_dates = tuple(
+    initial_floor_target = total_planned_day_cells // day_count if day_count else 0
+    initial_ceil_target = (
+        math.ceil(total_planned_day_cells / day_count) if day_count else 0
+    )
+    high_day_staffing_overrides = {
+        target_date: override
+        for target_date, override in day_staffing_overrides.items()
+        if override > initial_ceil_target
+    }
+    reserved_high_override_cells = sum(high_day_staffing_overrides.values())
+    normal_dates = tuple(
         target_date
         for target_date in month_dates
-        if target_date not in high_required_day_counts
+        if target_date not in high_day_staffing_overrides
     )
-    remaining_day_cells = max(
-        total_planned_day_cells - reserved_high_required_cells,
+    normal_day_cells = max(
+        total_planned_day_cells - reserved_high_override_cells,
         0,
     )
-    remaining_day_count = len(remaining_dates)
-    remaining_floor_target = (
-        remaining_day_cells // remaining_day_count
-        if remaining_day_count
+    normal_day_count = len(normal_dates)
+    normal_floor_target = (
+        normal_day_cells // normal_day_count
+        if normal_day_count
         else 0
     )
-    remaining_extra_cells = (
-        remaining_day_cells % remaining_day_count
-        if remaining_day_count
+    normal_ceil_target = (
+        math.ceil(normal_day_cells / normal_day_count)
+        if normal_day_count
         else 0
     )
+    normal_extra_cells = normal_day_cells % normal_day_count if normal_day_count else 0
     data = DayStaffingBalanceData(
         required_day_counts=required_day_counts,
         total_planned_day_cells=total_planned_day_cells,
         day_count=day_count,
-        high_required_day_counts=high_required_day_counts,
-        reserved_high_required_cells=reserved_high_required_cells,
-        remaining_day_cells=remaining_day_cells,
-        remaining_dates=remaining_dates,
-        remaining_floor_target=remaining_floor_target,
-        remaining_extra_cells=remaining_extra_cells,
+        high_day_staffing_overrides=high_day_staffing_overrides,
+        reserved_high_override_cells=reserved_high_override_cells,
+        normal_day_cells=normal_day_cells,
+        normal_dates=normal_dates,
+        normal_floor_target=normal_floor_target,
+        normal_ceil_target=normal_ceil_target,
+        normal_extra_cells=normal_extra_cells,
     )
 
     logger.info(
         "day staffing calculation total_planned_day_cells=%s day_count=%s "
-        "average_day_staff=%.3f required_day_staff=%s "
-        "high_required_dates=%s reserved_high_required_cells=%s "
-        "remaining_day_cells=%s remaining_day_count=%s "
-        "remaining_floor_target=%s remaining_extra_cells=%s",
+        "initial_targets=%s-%s day_staffing_overrides=%s "
+        "high_override_dates=%s reserved_high_override_cells=%s "
+        "normal_day_cells=%s normal_day_count=%s "
+        "normal_targets=%s-%s normal_extra_cells=%s",
         total_planned_day_cells,
         day_count,
-        total_planned_day_cells / day_count if day_count else 0,
-        [required_day_counts[target_date] for target_date in month_dates],
+        initial_floor_target,
+        initial_ceil_target,
         {
-            target_date.isoformat(): required_count
-            for target_date, required_count in high_required_day_counts.items()
+            target_date.isoformat(): override
+            for target_date, override in day_staffing_overrides.items()
         },
-        reserved_high_required_cells,
-        remaining_day_cells,
-        remaining_day_count,
-        remaining_floor_target,
-        remaining_extra_cells,
+        {
+            target_date.isoformat(): override
+            for target_date, override in high_day_staffing_overrides.items()
+        },
+        reserved_high_override_cells,
+        normal_day_cells,
+        normal_day_count,
+        normal_floor_target,
+        normal_ceil_target,
+        normal_extra_cells,
     )
 
     for target_date in month_dates:
@@ -852,108 +886,137 @@ def _build_day_staffing_balance_data(
 
     high_deviation_upper_bound = max(
         max_count,
-        max(high_required_day_counts.values(), default=0),
+        max(high_day_staffing_overrides.values(), default=0),
     )
-    for target_date, required_day_count in high_required_day_counts.items():
+    for target_date, override in high_day_staffing_overrides.items():
         deviation = model.NewIntVar(
             0,
             high_deviation_upper_bound,
-            f"high_required_day_deviation_{target_date.isoformat()}",
+            f"high_day_staffing_override_deviation_{target_date.isoformat()}",
         )
         model.AddAbsEquality(
             deviation,
-            data.actual_day_count_vars[target_date] - required_day_count,
+            data.actual_day_count_vars[target_date] - override,
         )
-        data.high_required_deviation_vars[target_date] = deviation
-    data.maximum_high_required_deviation = _add_max_or_zero(
+        data.high_override_deviation_vars[target_date] = deviation
+    data.maximum_high_override_deviation = _add_max_or_zero(
         model,
-        list(data.high_required_deviation_vars.values()),
+        list(data.high_override_deviation_vars.values()),
         high_deviation_upper_bound,
-        "maximum_high_required_day_deviation",
+        "maximum_high_day_staffing_override_deviation",
     )
     total_high_deviation_upper_bound = (
-        len(high_required_day_counts) * high_deviation_upper_bound
+        len(high_day_staffing_overrides) * high_deviation_upper_bound
     )
-    data.total_high_required_deviation = model.NewIntVar(
+    data.total_high_override_deviation = model.NewIntVar(
         0,
         total_high_deviation_upper_bound,
-        "total_high_required_day_deviation",
+        "total_high_day_staffing_override_deviation",
     )
     model.Add(
-        data.total_high_required_deviation
-        == sum(data.high_required_deviation_vars.values())
+        data.total_high_override_deviation
+        == sum(data.high_override_deviation_vars.values())
     )
 
-    remaining_priority_terms = []
-    if remaining_dates:
-        remaining_minimum = model.NewIntVar(
-            0, max_count, "remaining_day_count_minimum"
+    normal_target_band_deviation_terms = []
+    low_override_ceil_penalty_terms = []
+    if normal_dates:
+        normal_minimum = model.NewIntVar(
+            0, max_count, "normal_day_count_minimum"
         )
-        remaining_maximum = model.NewIntVar(
-            0, max_count, "remaining_day_count_maximum"
+        normal_maximum = model.NewIntVar(
+            0, max_count, "normal_day_count_maximum"
         )
-        remaining_actual_counts = [
+        normal_actual_counts = [
             data.actual_day_count_vars[target_date]
-            for target_date in remaining_dates
+            for target_date in normal_dates
         ]
-        model.AddMinEquality(remaining_minimum, remaining_actual_counts)
-        model.AddMaxEquality(remaining_maximum, remaining_actual_counts)
-        data.remaining_day_count_range = model.NewIntVar(
-            0, max_count, "remaining_day_count_range"
+        model.AddMinEquality(normal_minimum, normal_actual_counts)
+        model.AddMaxEquality(normal_maximum, normal_actual_counts)
+        data.normal_day_count_range = model.NewIntVar(
+            0, max_count, "normal_day_count_range"
         )
         model.Add(
-            data.remaining_day_count_range
-            == remaining_maximum - remaining_minimum
+            data.normal_day_count_range == normal_maximum - normal_minimum
         )
 
-        highest_remaining_required = max(
-            required_day_counts[target_date] for target_date in remaining_dates
-        )
-        for target_date in remaining_dates:
-            additional_day_count = model.NewIntVar(
+        for target_date in normal_dates:
+            below_floor = model.NewIntVar(
                 0,
                 max_count,
-                f"remaining_day_additional_count_{target_date.isoformat()}",
+                f"normal_day_below_floor_{target_date.isoformat()}",
             )
             model.AddMaxEquality(
-                additional_day_count,
+                below_floor,
                 [
-                    data.actual_day_count_vars[target_date]
-                    - remaining_floor_target,
+                    normal_floor_target
+                    - data.actual_day_count_vars[target_date],
                     0,
                 ],
             )
-            priority_weight = (
-                highest_remaining_required - required_day_counts[target_date]
+            above_ceil = model.NewIntVar(
+                0,
+                max_count,
+                f"normal_day_above_ceil_{target_date.isoformat()}",
             )
-            if priority_weight:
-                remaining_priority_terms.append(
-                    additional_day_count * priority_weight
-                )
-    else:
-        data.remaining_day_count_range = 0
+            model.AddMaxEquality(
+                above_ceil,
+                [
+                    data.actual_day_count_vars[target_date]
+                    - normal_ceil_target,
+                    0,
+                ],
+            )
+            normal_target_band_deviation_terms.extend((below_floor, above_ceil))
 
-    remaining_required_spread = (
-        max(required_day_counts[target_date] for target_date in remaining_dates)
-        - min(required_day_counts[target_date] for target_date in remaining_dates)
-        if remaining_dates
-        else 0
-    )
-    priority_penalty_upper_bound = (
-        len(remaining_dates) * max_count * remaining_required_spread
-    )
-    if remaining_priority_terms:
-        data.remaining_allocation_priority_penalty = model.NewIntVar(
+            override = day_staffing_overrides.get(target_date)
+            if override is not None and override < normal_floor_target:
+                ceil_side_count = model.NewIntVar(
+                    0,
+                    max_count,
+                    f"low_override_ceil_penalty_{target_date.isoformat()}",
+                )
+                model.AddMaxEquality(
+                    ceil_side_count,
+                    [
+                        data.actual_day_count_vars[target_date]
+                        - normal_floor_target,
+                        0,
+                    ],
+                )
+                low_override_ceil_penalty_terms.append(ceil_side_count)
+    else:
+        data.normal_day_count_range = 0
+
+    normal_target_band_deviation_upper_bound = 2 * len(normal_dates) * max_count
+    if normal_target_band_deviation_terms:
+        data.normal_target_band_deviation = model.NewIntVar(
             0,
-            priority_penalty_upper_bound,
-            "remaining_day_allocation_priority_penalty",
+            normal_target_band_deviation_upper_bound,
+            "normal_day_target_band_deviation",
         )
         model.Add(
-            data.remaining_allocation_priority_penalty
-            == sum(remaining_priority_terms)
+            data.normal_target_band_deviation
+            == sum(normal_target_band_deviation_terms)
         )
     else:
-        data.remaining_allocation_priority_penalty = 0
+        data.normal_target_band_deviation = 0
+
+    low_override_ceil_penalty_upper_bound = (
+        len(low_override_ceil_penalty_terms) * max_count
+    )
+    if low_override_ceil_penalty_terms:
+        data.low_override_ceil_penalty = model.NewIntVar(
+            0,
+            low_override_ceil_penalty_upper_bound,
+            "low_override_ceil_penalty",
+        )
+        model.Add(
+            data.low_override_ceil_penalty
+            == sum(low_override_ceil_penalty_terms)
+        )
+    else:
+        data.low_override_ceil_penalty = 0
 
     data.minimum_actual_day_count = model.NewIntVar(
         0,
@@ -985,19 +1048,22 @@ def _build_day_staffing_balance_data(
     data.objective_score = _build_lexicographic_score(
         [
             (
-                data.maximum_high_required_deviation,
+                data.maximum_high_override_deviation,
                 high_deviation_upper_bound,
             ),
             (
-                data.total_high_required_deviation,
+                data.total_high_override_deviation,
                 total_high_deviation_upper_bound,
             ),
-            (data.remaining_day_count_range, max_count),
+            (data.normal_day_count_range, max_count),
             (
-                data.remaining_allocation_priority_penalty,
-                priority_penalty_upper_bound,
+                data.normal_target_band_deviation,
+                normal_target_band_deviation_upper_bound,
             ),
-            (data.actual_day_count_range, max_count),
+            (
+                data.low_override_ceil_penalty,
+                low_override_ceil_penalty_upper_bound,
+            ),
         ]
     )
     return data

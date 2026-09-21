@@ -17,10 +17,11 @@ from app.context import build_optimization_context
 from app.optimization import (
     SUCCESSFUL_OPTIMIZATION_STATUSES,
     _build_day_ability_balance_objective,
+    _log_phase_summary,
     optimize_shift,
 )
 from app.schemas import GenerateShiftRequest
-from app.types import OptimizationError, OptimizerStaff
+from app.types import OptimizationError, OptimizationPhaseResult, OptimizerStaff
 
 
 def make_request(
@@ -28,6 +29,7 @@ def make_request(
     days: int,
     staff_members: list[dict],
     required_day_staff: int | list[int] = 0,
+    required_day_staff_override: int | list[int | None] | None = None,
     required_night_staff: int | list[int] = 0,
     off_days: int | dict[int, int] = 0,
     max_consecutive_work_days: int = 5,
@@ -47,6 +49,11 @@ def make_request(
         if isinstance(required_day_staff, list)
         else [required_day_staff] * days
     )
+    required_day_overrides = (
+        required_day_staff_override
+        if isinstance(required_day_staff_override, list)
+        else [required_day_staff_override] * days
+    )
     off_days_by_staff = (
         off_days
         if isinstance(off_days, dict)
@@ -61,6 +68,7 @@ def make_request(
                 {
                     "date": target_date.isoformat(),
                     "required_day_staff": required_days[index],
+                    "required_day_staff_override": required_day_overrides[index],
                     "required_night_staff": required_nights[index],
                     "required_leader_staff": 0,
                     "min_ability_level": None,
@@ -475,72 +483,95 @@ def test_generated_night_cannot_use_manual_day_after_after_night() -> None:
     ] == [SHIFT_NIGHT, SHIFT_AFTER_NIGHT, SHIFT_OFF]
 
 
-def test_low_required_day_does_not_reduce_actual_day_staffing() -> None:
+def test_common_required_day_staff_does_not_change_day_staffing_allocation() -> None:
     staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
-    request = make_request(
-        days=3,
-        staff_members=staff_members,
-        off_days=0,
+    baseline_context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
+        )
     )
-    payload = request.model_dump(mode="json")
-    for rule, required_day_staff in zip(
-        payload["effective_rules"],
-        [5, 5, 3],
-    ):
-        rule["required_day_staff"] = required_day_staff
+    changed_common_required_context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_day_staff=[1, 99, 3],
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
+        )
+    )
+
+    baseline_output = optimize_shift(baseline_context)
+    changed_output = optimize_shift(changed_common_required_context)
+
+    assert selected_day_counts(
+        baseline_output, context=baseline_context
+    ) == selected_day_counts(changed_output, context=changed_common_required_context)
+    assert sorted(selected_day_counts(baseline_output, context=baseline_context)) == [5, 5, 6]
+
+
+def test_common_high_required_day_is_not_a_day_staffing_exception() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
     context = build_optimization_context(
-        GenerateShiftRequest.model_validate(payload)
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_day_staff=[8, 8, 8],
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
+        )
     )
 
     output = optimize_shift(context)
 
-    assert [
-        sum(
-            selected_shift_type(
-                output,
-                staff_id=staff_member["id"],
-                target_date=target_date,
-            )
-            == SHIFT_DAY
-            for staff_member in staff_members
+    assert sorted(selected_day_counts(output, context=context)) == [5, 5, 6]
+
+
+def test_low_day_staffing_override_prefers_floor_target_without_breaking_range() -> None:
+    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
+    context = build_optimization_context(
+        make_request(
+            days=3,
+            staff_members=staff_members,
+            required_day_staff_override=[None, None, 3],
+            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
         )
-        for target_date in context.month_dates
-    ] == [6, 6, 6]
+    )
+
+    output = optimize_shift(context)
+    day_counts = selected_day_counts(output, context=context)
+
+    assert day_counts[2] == 5
+    assert max(day_counts) - min(day_counts) == 1
 
 
-def test_high_required_day_is_filled_when_capacity_allows() -> None:
+def test_high_day_staffing_override_is_reserved_then_rebalanced() -> None:
     staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 8)]
-    request = make_request(
-        days=3,
-        staff_members=staff_members,
-        off_days=0,
-    )
-    payload = request.model_dump(mode="json")
-    payload["effective_rules"][1]["required_day_staff"] = 7
     context = build_optimization_context(
-        GenerateShiftRequest.model_validate(payload)
+        make_request(
+            days=5,
+            staff_members=staff_members,
+            required_day_staff_override=[None, None, 7, None, None],
+            off_days={staff_id: 1 for staff_id in range(1, 8)},
+        )
     )
 
     output = optimize_shift(context)
+    day_counts = selected_day_counts(output, context=context)
 
-    assert sum(
-        selected_shift_type(
-            output,
-            staff_id=staff_member["id"],
-            target_date=context.month_dates[1],
-        )
-        == SHIFT_DAY
-        for staff_member in staff_members
-    ) == 7
+    assert output.day_staffing_balance_data.total_planned_day_cells == 28
+    assert day_counts[2] == 7
+    assert sum(day_counts) == 28
+    normal_day_counts = [count for index, count in enumerate(day_counts) if index != 2]
+    assert max(normal_day_counts) - min(normal_day_counts) == 1
 
 
-def test_day_staffing_reserves_high_required_then_rebalances_remaining_days() -> None:
+def test_day_staffing_reserves_high_override_then_prefers_low_override_floor_targets() -> None:
     staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
     context = build_optimization_context(
         make_request(
             days=5,
             staff_members=staff_members,
-            required_day_staff=[6, 6, 6, 4, 3],
+            required_day_staff_override=[6, 6, 6, 4, 3],
             off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
         )
     )
@@ -549,36 +580,19 @@ def test_day_staffing_reserves_high_required_then_rebalances_remaining_days() ->
     data = output.day_staffing_balance_data
 
     assert data.total_planned_day_cells == 28
-    assert data.reserved_high_required_cells == 18
-    assert data.remaining_day_cells == 10
-    assert data.remaining_floor_target == 5
+    assert data.high_day_staffing_overrides == {}
+    assert data.normal_floor_target == 5
+    assert data.normal_ceil_target == 6
     assert selected_day_counts(output, context=context) == [6, 6, 6, 5, 5]
 
 
-def test_day_staffing_assigns_remaining_extra_cell_to_higher_required_day() -> None:
-    staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
-    context = build_optimization_context(
-        make_request(
-            days=3,
-            staff_members=staff_members,
-            required_day_staff=[5, 4, 3],
-            off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
-        )
-    )
-
-    output = optimize_shift(context)
-
-    assert output.day_staffing_balance_data.total_planned_day_cells == 16
-    assert selected_day_counts(output, context=context) == [6, 5, 5]
-
-
-def test_day_staffing_does_not_overfill_high_required_day() -> None:
+def test_high_day_staffing_override_is_not_overfilled() -> None:
     staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 9)]
     context = build_optimization_context(
         make_request(
             days=4,
             staff_members=staff_members,
-            required_day_staff=[8, 5, 5, 4],
+            required_day_staff_override=[8, 5, 5, 4],
             off_days={
                 1: 2,
                 2: 2,
@@ -598,13 +612,13 @@ def test_day_staffing_does_not_overfill_high_required_day() -> None:
     assert selected_day_counts(output, context=context) == [8, 5, 5, 4]
 
 
-def test_low_required_day_does_not_directly_reduce_day_staffing() -> None:
+def test_low_day_staffing_override_does_not_directly_reduce_day_staffing() -> None:
     staff_members = [staff(staff_id=staff_id) for staff_id in range(1, 7)]
     context = build_optimization_context(
         make_request(
             days=3,
             staff_members=staff_members,
-            required_day_staff=[6, 6, 3],
+            required_day_staff_override=[6, 6, 3],
             off_days=0,
         )
     )
@@ -700,15 +714,33 @@ def test_day_ability_phase_preserves_fixed_day_staffing_counts() -> None:
         make_request(
             days=3,
             staff_members=staff_members,
-            required_day_staff=[5, 4, 3],
+            required_day_staff_override=[None, None, 3],
             off_days={1: 1, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0},
         )
     )
 
     output = optimize_shift(context)
 
-    assert selected_day_counts(output, context=context) == [6, 5, 5]
+    expected_day_counts = selected_day_counts(output, context=context)
+    assert expected_day_counts[2] == 5
+    assert sorted(expected_day_counts) == [5, 5, 6]
     assert [
         output.solver.Value(count_var)
         for count_var in output.day_staffing_balance_data.actual_day_count_vars.values()
-    ] == [6, 5, 5]
+    ] == expected_day_counts
+
+
+def test_phase_summary_logs_feasible_unknown_and_not_run_as_non_optimal(caplog) -> None:
+    phase_results = [
+        OptimizationPhaseResult("night_count_balance", "OPTIMAL", 0, True, None),
+        OptimizationPhaseResult("night_ability_balance", "FEASIBLE", 4, False, None),
+        OptimizationPhaseResult("day_staffing_balance", "UNKNOWN", None, False, None),
+        OptimizationPhaseResult("day_ability_balance", "NOT_RUN", None, False, None),
+    ]
+
+    with caplog.at_level("INFO", logger="app.optimization"):
+        _log_phase_summary(phase_results)
+
+    assert "name=night_count_balance status=OPTIMAL optimal=True" in caplog.text
+    assert "name=night_ability_balance status=FEASIBLE optimal=False" in caplog.text
+    assert "optimization non_optimal_phases=['night_ability_balance', 'day_staffing_balance', 'day_ability_balance']" in caplog.text
