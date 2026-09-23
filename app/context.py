@@ -1,4 +1,9 @@
-"""Conversion from HTTP schemas to the optimizer's internal data model."""
+"""HTTPリクエストをOR-Toolsが使いやすい内部コンテキストへ変換する。
+
+schemas.pyのリスト中心のHTTP入力を、optimization.pyで参照しやすい
+スタッフID・日付をキーにした辞書や集合へ一度だけ正規化する。
+この層で入力の整合性も検証し、最適化ロジックを制約構築に専念させる。
+"""
 
 from .constants import GENERATABLE_SHIFT_TYPES, OFF_LIKE_SHIFT_TYPES, SHIFT_TRAINING
 from .schemas import GenerateShiftRequest
@@ -11,8 +16,9 @@ from .types import (
 
 
 def build_optimization_context(request: GenerateShiftRequest) -> OptimizationContext:
-    """Build the mapping-based structure consumed by the OR-Tools optimizer."""
+    """検証済みリクエストを、OR-Tools用の検索しやすいデータ構造へ変換する。"""
 
+    # Solverへ渡す前に、日付・スタッフ・固定セルの参照不整合を止める。
     _validate_request_consistency(request)
 
     return OptimizationContext(
@@ -27,10 +33,12 @@ def build_optimization_context(request: GenerateShiftRequest) -> OptimizationCon
             )
             for staff in request.staff_members
         ],
+        # 固定勤務は (staff_id, date) で即座に引ける辞書にする。
         fixed_assignments={
             (assignment.staff_id, assignment.date): assignment.shift_type
             for assignment in request.fixed_assignments
         },
+        # 日別ルールも date をキーにして、制約構築時の全探索を避ける。
         effective_rules={
             rule.date: EffectiveRule(
                 required_day_staff=rule.required_day_staff,
@@ -46,6 +54,7 @@ def build_optimization_context(request: GenerateShiftRequest) -> OptimizationCon
             )
             for rule in request.effective_rules
         },
+        # 前月末の連勤数は月初日の最大連勤制約へ引き継ぐ。
         previous_consecutive_work_days={
             item.staff_id: item.previous_consecutive_work_days
             for item in request.previous_consecutive_work_days
@@ -53,6 +62,7 @@ def build_optimization_context(request: GenerateShiftRequest) -> OptimizationCon
         effective_off_days={
             item.staff_id: item.off_days for item in request.effective_off_days
         },
+        # configured_off_days がない旧形式のpayloadでは effective_off_days を互換値にする。
         configured_off_days=(
             {
                 item.staff_id: item.off_days
@@ -71,7 +81,7 @@ def build_optimization_context(request: GenerateShiftRequest) -> OptimizationCon
 
 
 def _validate_request_consistency(request: GenerateShiftRequest) -> None:
-    """Reject cross-field inconsistencies before constructing an OR-Tools model."""
+    """モデル構築前に、フィールド間の矛盾を422として検出する。"""
 
     month_date_set = set(request.month_dates)
     if not request.month_dates:
@@ -155,7 +165,7 @@ def _validate_request_consistency(request: GenerateShiftRequest) -> None:
 
 
 def _validate_assignment_cells(*, label, cells, staff_id_set, month_date_set) -> None:
-    """Ensure cell-keyed payload fields refer to a unique in-month staff cell."""
+    """セル指定が対象月・対象スタッフ内で重複なく参照されているか確認する。"""
 
     if len(set(cells)) != len(cells):
         raise OptimizationError(f"{label} に重複したスタッフ・日付の組み合わせがあります。")

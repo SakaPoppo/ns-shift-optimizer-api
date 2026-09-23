@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    cpus: "2.0"
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8080
+      --reload
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    environment:
+      ORTOOLS_NUM_SEARCH_WORKERS: "2"

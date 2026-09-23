@@ -1,4 +1,7 @@
-"""Shared primitive and domain types for the optimizer API."""
+"""
+最適化API内で共有する基本型・ドメイン型を定義する。
+schemas.pyのHTTPモデルとは分離し、context.py以降で使うPythonの内部データ構造を表す。
+"""
 
 from dataclasses import dataclass, field
 from datetime import date
@@ -7,13 +10,14 @@ from typing import Annotated
 from pydantic import Field
 
 
+# API入力で検証する値の範囲。能力はLv1〜5、曜日は月曜0〜日曜6。
 AbilityLevel = Annotated[int, Field(ge=1, le=5)]
 Weekday = Annotated[int, Field(ge=0, le=6)]
 
 
 @dataclass(frozen=True)
 class OptimizerStaff:
-    """The Django-independent staff data required by the solver."""
+    """Solverが必要とする、Djangoモデルに依存しないスタッフ情報。"""
 
     id: int
     role: str
@@ -24,7 +28,7 @@ class OptimizerStaff:
 
 @dataclass(frozen=True)
 class EffectiveRule:
-    """Final, date-specific shift conditions resolved by Ns Shift."""
+    """Ns Shiftで優先ルールを解決した後の日別勤務条件。"""
 
     required_day_staff: int
     required_day_staff_override: int | None
@@ -38,7 +42,7 @@ class EffectiveRule:
 
 @dataclass(frozen=True)
 class OptimizationContext:
-    """Django-free input data used to construct the OR-Tools model."""
+    """OR-Toolsモデルを構築するための、Django非依存の入力データ。"""
 
     month_dates: list[date]
     staff_members: list[OptimizerStaff]
@@ -53,12 +57,15 @@ class OptimizationContext:
 
     @property
     def max_consecutive_work_days(self) -> int:
-        """Return the month-wide limit represented by resolved API rules."""
+        """日別ルールに共通で設定される月内の最大連勤数を返す。"""
 
         try:
             return self.effective_rules[self.month_dates[0]].max_consecutive_work_days
         except IndexError as error:
             raise OptimizationError("対象日がないため最適化できません。") from error
+
+
+# --- 各最適化フェーズが作るCP-SAT変数・評価値の入れ物 ---
 
 
 @dataclass
@@ -160,7 +167,7 @@ class OptimizationPhaseResult:
 
 @dataclass(frozen=True)
 class ShiftOptimizationOutput:
-    """The solved model state needed by the next response-mapping commit."""
+    """回答生成に必要な、最終Solver状態と各フェーズの結果。"""
 
     solver: object
     solver_status: str
@@ -172,8 +179,8 @@ class ShiftOptimizationOutput:
 
 
 class OptimizationError(Exception):
-    """Signals unsatisfiable input or an unsuccessful solver execution."""
+    """入力矛盾またはSolverの正常終了失敗を表す基底例外。"""
 
 
 class InfeasibleOptimizationError(OptimizationError):
-    """Signals a valid optimization request with no feasible assignment."""
+    """入力は正しいが、両立する勤務配置が存在しないことを表す例外。"""

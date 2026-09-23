@@ -1,11 +1,12 @@
 """OR-Toolsの制約モデル構築と複数フェーズ最適化。
 
-ハード制約に加えて以下を追加している。
+処理の流れは、勤務セルの変数作成、ハード制約追加、目的関数の組み立て、
+優先順位付きフェーズの順次探索、各フェーズの最良値固定である。
+前フェーズの目的値を固定してから次フェーズを解くため、後続の改善で
+夜勤回数公平性など上位優先度の品質が悪化しない。
 
-- 必要リーダー人数・必要能力スタッフ人数のハード制約
-- 最大連勤数のハード制約
-- 月間の日勤予定セル総数を日別へ優先配分する目的関数
-- 月間夜勤回数差などの公平性目的関数
+主なハード制約は必要リーダー人数・能力条件・最大連勤・月休日数・必要夜勤人数。
+主なソフト目的は夜勤回数公平性、日勤人数配分、日勤・夜勤の能力均等化、長期連勤の抑制。
 """
 
 from __future__ import annotations
@@ -51,26 +52,23 @@ LONG_STREAK_WEIGHTS = {"near_max": 1, "at_max": 3}
 ABILITY_LEVELS = (1, 2, 3, 4, 5)
 CP_SAT_INT_MAX = 2**63 - 1
 PHASE_TIME_LIMITS = {
-    "night_count_balance": 30,
+    "night_count_balance": 40,
     "night_ability_balance": 40,
-    "day_staffing_balance": 15,
-    "day_ability_balance": 10,
-    "long_streak": 10,
+    "day_staffing_balance": 40,
+    "day_ability_balance": 40,
+    "long_streak": 40,
 }
 REQUIRED_OPTIMIZATION_PHASES = {
     "night_count_balance",
     "day_staffing_balance",
 }
 SUCCESSFUL_OPTIMIZATION_STATUSES = {"OPTIMAL", "FEASIBLE"}
-BASE_STAFF_COUNT = 20
-STAFF_COUNT_STEP = 10
-TIME_SCALE_PER_STEP = 0.25
-MAX_TIME_SCALE = 1.75
 
 
 def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
     """読み込み済みコンテキストから制約モデルを作り、優先順に最適化する。"""
 
+    # 1人・1日・1勤務の選択肢と、固定勤務の土台を作る。
     model = cp_model.CpModel()
     shift_vars = _build_shift_variables(
         model=model,
@@ -78,6 +76,7 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
         month_dates=context.month_dates,
         fixed_assignments=context.fixed_assignments,
     )
+    # 実行可能性を守るハード制約を追加する。
     _add_night_shift_eligibility_constraints(
         model=model,
         staff_members=context.staff_members,
@@ -108,6 +107,7 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
         effective_off_days=context.effective_off_days,
     )
 
+    # 日勤・夜勤・能力・長期連勤の最適化用データと目的関数を作る。
     _add_required_night_staff_constraints(
         model=model,
         staff_members=context.staff_members,
@@ -178,19 +178,17 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
         previous_consecutive_work_days=context.previous_consecutive_work_days,
     )
 
+    # 上位目的の最良値を固定しながら、定義順に各フェーズを探索する。
     phase_definitions = _build_phase_definitions(
         day_staffing_balance_data=day_staffing_balance_data,
         day_ability_balance_data=day_ability_balance_data,
         night_count_balance_data=night_count_balance_data,
         long_streak_terms=long_streak_terms,
-        staff_count=len(context.staff_members),
     )
-    time_scale = _calculate_solver_time_scale(len(context.staff_members))
     logger.info(
         "shift optimization configuration "
-        "staff_count=%s time_scale=%.2f phase_limits=%s",
+        "staff_count=%s phase_limits=%s",
         len(context.staff_members),
-        time_scale,
         {
             phase.name: phase.max_time_seconds
             for phase in phase_definitions
@@ -223,11 +221,8 @@ def _build_phase_definitions(
     day_ability_balance_data: DayAbilityBalanceData,
     night_count_balance_data: NightCountBalanceData,
     long_streak_terms: list,
-    staff_count: int,
 ) -> list[OptimizationPhaseDefinition]:
-    """現在の優先順位とスタッフ数に応じた制限時間でフェーズを作る。"""
-
-    time_scale = _calculate_solver_time_scale(staff_count)
+    """現在の優先順位とフェーズ共通の制限時間でフェーズを作る。"""
     objectives = [
     (
         "night_count_balance",
@@ -254,33 +249,10 @@ def _build_phase_definitions(
         OptimizationPhaseDefinition(
             name=name,
             objective=objective,
-            max_time_seconds=_calculate_phase_time_limit(
-                base_seconds=PHASE_TIME_LIMITS[name],
-                time_scale=time_scale,
-            ),
+            max_time_seconds=PHASE_TIME_LIMITS[name],
         )
         for name, objective in objectives
     ]
-
-
-def _calculate_solver_time_scale(staff_count: int) -> float:
-    """20人を基準に10人単位で時間を延長し、1.75倍を上限とする。"""
-
-    if staff_count <= BASE_STAFF_COUNT:
-        return 1.0
-    extra_steps = math.ceil(
-        (staff_count - BASE_STAFF_COUNT) / STAFF_COUNT_STEP
-    )
-    return min(
-        1.0 + extra_steps * TIME_SCALE_PER_STEP,
-        MAX_TIME_SCALE,
-    )
-
-
-def _calculate_phase_time_limit(*, base_seconds: int, time_scale: float) -> int:
-    """倍率適用後の秒数を切り上げ、最低1秒を保証する。"""
-
-    return max(1, math.ceil(base_seconds * time_scale))
 
 
 def _add_shift_solution_hints(*, model, shift_vars: dict, solver) -> None:
