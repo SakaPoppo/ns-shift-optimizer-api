@@ -1,18 +1,17 @@
-"""HTTP request and response schemas for the optimizer boundary.
+"""Ns ShiftとOptimizer API間で送受信するJSON形式を定義する。
 
-These models deliberately contain no Django models or database concerns.  They
-mirror the JSON produced by Ns Shift's ``build_optimizer_payload`` function.
+Pydanticが型・必須項目・数値範囲を入口で検証し、context.py以降へ不正な入力を渡さない。
 """
 
 from datetime import date
-
 from pydantic import BaseModel, Field
-
 from .types import AbilityLevel, Weekday
 
 
+# --- Ns Shiftから受け取る生成条件 ---
+
+
 class StaffInput(BaseModel):
-    """A staff member available to the optimizer."""
 
     id: int
     role: str
@@ -22,7 +21,6 @@ class StaffInput(BaseModel):
 
 
 class FixedAssignmentInput(BaseModel):
-    """A shift assignment that the optimizer must preserve."""
 
     staff_id: int
     date: date
@@ -30,7 +28,6 @@ class FixedAssignmentInput(BaseModel):
 
 
 class EffectiveRuleInput(BaseModel):
-    """The final, date-specific rule values resolved by Ns Shift."""
 
     date: date
     required_day_staff: int
@@ -44,35 +41,35 @@ class EffectiveRuleInput(BaseModel):
 
 
 class PreviousConsecutiveWorkInput(BaseModel):
-    """A staff member's resolved consecutive-work count from the prior month."""
+    """前月末から引き継ぐ、スタッフごとの連勤数。"""
 
     staff_id: int
     previous_consecutive_work_days: int
 
 
 class EffectiveOffDayInput(BaseModel):
-    """The final monthly number of off days assigned to one staff member."""
+    """固定勤務を反映後に、そのスタッフへ割り当てる月休日数。"""
 
     staff_id: int
     off_days: int
 
 
 class ConfiguredOffDayInput(BaseModel):
-    """The monthly off-day count configured for one staff member."""
+    """設定画面で指定された、スタッフごとの月休日数。"""
 
     staff_id: int
     off_days: int
 
 
 class AssignmentKeyInput(BaseModel):
-    """Identifies a user-controlled assignment cell."""
+    """ユーザーが手入力で確定した勤務セルを特定するキー。"""
 
     staff_id: int
     date: date
 
 
 class GenerateShiftRequest(BaseModel):
-    """The complete, JSON-serializable payload sent from Ns Shift."""
+    """Ns Shiftから送る、シフト生成に必要な全入力。"""
 
     month_dates: list[date]
     staff_members: list[StaffInput]
@@ -84,12 +81,15 @@ class GenerateShiftRequest(BaseModel):
     user_override_assignment_keys: list[AssignmentKeyInput]
 
 
+# --- Optimizer APIから返す生成結果 ---
+
+
 class HealthResponse(BaseModel):
     status: str
 
 
 class GeneratedShiftOutput(BaseModel):
-    """One staff member's resolved shift for one target date."""
+    """スタッフ1人・対象日1日の確定勤務。"""
 
     staff_id: int
     date: date
@@ -97,7 +97,7 @@ class GeneratedShiftOutput(BaseModel):
 
 
 class OptimizationPhaseOutput(BaseModel):
-    """A JSON-safe summary of one optimization phase."""
+    """最適化フェーズ1つ分の、JSONで返せる実行結果。"""
 
     name: str
     status: str
@@ -106,7 +106,7 @@ class OptimizationPhaseOutput(BaseModel):
 
 
 class GenerationIssueResponse(BaseModel):
-    """Machine-readable generation fact consumed by the Django application."""
+    """Djangoが表示・マーキングに使う、機械可読な生成結果の事実。"""
 
     code: str
     severity: str

@@ -1,4 +1,8 @@
-"""保護対象の最適化APIに共通で使用するAPIキー認証。"""
+"""保護対象の最適化APIに共通で使用するAPIキー認証。
+
+`/generate` はNs Shiftからの呼び出しだけを受け付け、`/health` は監視用に公開する。
+キーそのものはコードに持たず、環境変数からだけ取得する。
+"""
 
 from __future__ import annotations
 

@@ -83,6 +83,8 @@ Cloud Run
 │   ├── test_context_and_optimization.py
 │   └── test_main.py
 ├── Dockerfile
+├── compose.yml
+├── .env.example
 ├── requirements.txt
 ├── service.yaml
 ├── .dockerignore
@@ -111,6 +113,27 @@ OR-Toolsのsolver・変数・tuple keyを含む内部結果を、JSON安全な�
 ### `tests/`
 
 APIの正常系・validation errorなどをテストします。
+
+## Local Development
+
+ローカルでNs Shiftと連携する場合は、以下を実行します。
+
+```bash
+cp .env.example .env
+# Ns Shift側の .env に設定する OPTIMIZER_API_KEY と同じ値を .env に設定する
+docker compose up --build
+```
+
+`http://localhost:8080/health` でヘルスチェック、`http://localhost:8080/docs` でSwagger UIを開けます。
+
+ComposeではAPIコンテナを2 CPUに制限し、`ORTOOLS_NUM_SEARCH_WORKERS=2` をOR-Toolsへ渡します。Uvicornは1プロセスで動作し、`app/` をマウントして `--reload` で起動するため、Pythonコードの保存後はイメージを再buildせず自動再起動します。`requirements.txt` またはDockerfileを変更した場合だけ `docker compose up --build` を実行してください。
+
+開発時の接続経路は以下です。
+
+```text
+Ns Shift (DEBUG=true) -> http://host.docker.internal:8080 -> local Optimizer API
+Ns Shift (DEBUG=false) -> OPTIMIZER_API_URL -> Cloud Run Optimizer API
+```
 
 ## Run with Docker
 

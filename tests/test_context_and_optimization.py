@@ -15,13 +15,34 @@ from app.constants import (
 )
 from app.context import build_optimization_context
 from app.optimization import (
+    PHASE_TIME_LIMITS,
     SUCCESSFUL_OPTIMIZATION_STATUSES,
+    _new_solver,
     _build_day_ability_balance_objective,
     _log_phase_summary,
     optimize_shift,
 )
 from app.schemas import GenerateShiftRequest
 from app.types import OptimizationError, OptimizationPhaseResult, OptimizerStaff
+
+
+def test_each_optimization_phase_has_a_fixed_40_second_limit() -> None:
+    assert set(PHASE_TIME_LIMITS) == {
+        "night_count_balance",
+        "night_ability_balance",
+        "day_staffing_balance",
+        "day_ability_balance",
+        "long_streak",
+    }
+    assert set(PHASE_TIME_LIMITS.values()) == {40}
+
+
+def test_solver_uses_ortools_worker_count_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("ORTOOLS_NUM_SEARCH_WORKERS", "2")
+
+    solver = _new_solver(max_time_seconds=40)
+
+    assert solver.parameters.num_search_workers == 2
 
 
 def make_request(
@@ -504,9 +525,16 @@ def test_common_required_day_staff_does_not_change_day_staffing_allocation() -> 
     baseline_output = optimize_shift(baseline_context)
     changed_output = optimize_shift(changed_common_required_context)
 
-    assert selected_day_counts(
-        baseline_output, context=baseline_context
-    ) == selected_day_counts(changed_output, context=changed_common_required_context)
+    # 同点解では、+1日勤を置く日付自体はSolverの探索順で入れ替わり得る。
+    # 共通required_day_staffが配分量を変えないことを、日別人数の集合で確認する。
+    assert sorted(
+        selected_day_counts(baseline_output, context=baseline_context)
+    ) == sorted(
+        selected_day_counts(
+            changed_output,
+            context=changed_common_required_context,
+        )
+    )
     assert sorted(selected_day_counts(baseline_output, context=baseline_context)) == [5, 5, 6]
 
 
@@ -609,7 +637,11 @@ def test_high_day_staffing_override_is_not_overfilled() -> None:
     output = optimize_shift(context)
 
     assert output.day_staffing_balance_data.total_planned_day_cells == 22
-    assert selected_day_counts(output, context=context) == [8, 5, 5, 4]
+    day_counts = selected_day_counts(output, context=context)
+    # 高いoverride日は8人で固定される。一方、残りの4・5・5は同点解のため
+    # どの日付へ置くかを固定しない。
+    assert day_counts[0] == 8
+    assert sorted(day_counts[1:]) == [4, 5, 5]
 
 
 def test_low_day_staffing_override_does_not_directly_reduce_day_staffing() -> None:

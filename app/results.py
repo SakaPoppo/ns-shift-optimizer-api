@@ -1,4 +1,8 @@
-"""Conversion from OR-Tools output to JSON-safe API response models."""
+"""OR-Toolsの内部結果を、JSONで返せるAPIレスポンスへ変換する。
+
+SolverやBoolVar、日付タプルキーをそのまま外部へ出さず、勤務一覧・フェーズ結果・
+機械可読なGenerationIssueへ変換する。画面用の日本語文言はDjango側の責務である。
+"""
 
 from collections import Counter
 from datetime import date
@@ -28,7 +32,7 @@ def build_generate_shift_response(
     context: OptimizationContext,
     optimization: ShiftOptimizationOutput,
 ) -> GenerateShiftResponse:
-    """Build an API response without exposing CP-SAT objects or tuple keys."""
+    """CP-SAT内部オブジェクトを公開せず、生成成功レスポンスを組み立てる。"""
 
     shifts = []
     for staff_member in context.staff_members:
@@ -75,7 +79,7 @@ def build_generate_shift_response(
 def build_infeasible_generate_shift_response(
     *, context: OptimizationContext
 ) -> GenerateShiftResponse:
-    """Return a completed, but unsatisfiable, optimization result."""
+    """制約が両立しない場合の、画面表示可能なレスポンスを返す。"""
 
     issues = _build_hard_staffing_issues(context)
     if not issues:
@@ -95,7 +99,7 @@ def build_infeasible_generate_shift_response(
 
 
 def _selected_shift_type(*, optimization: ShiftOptimizationOutput, cell_key) -> str | None:
-    """Return the single generated shift selected by the final solver."""
+    """最終Solverが選択した、そのセルの勤務区分を1件だけ取り出す。"""
 
     day_vars = optimization.shift_vars[cell_key]
     selected_shift_types = [
@@ -113,7 +117,7 @@ def _solver_value(solver, expression) -> int:
 
 
 def _serialize_daily_counts(counts: dict[date, int]) -> dict[str, int]:
-    """Keep date-keyed solver data JSON-safe without introducing UI text."""
+    """日付キーの集計値を、UI文言を混ぜずJSON安全な文字列キーへ変換する。"""
 
     return {target_date.isoformat(): count for target_date, count in counts.items()}
 
@@ -121,7 +125,7 @@ def _serialize_daily_counts(counts: dict[date, int]) -> dict[str, int]:
 def _most_frequent_count(
     counts: dict,
 ) -> int | None:
-    """Return the modal count, breaking ties toward the lower count."""
+    """最頻値を返す。同数なら小さい人数を採用する。"""
 
     frequencies = Counter(counts.values())
     if not frequencies:
@@ -140,12 +144,10 @@ def _build_generation_issues(
     optimization: ShiftOptimizationOutput,
     shifts: list[GeneratedShiftOutput] | None = None,
 ) -> list[GenerationIssueResponse]:
-    """Build the shared structured Issue contract from a solved model.
+    """解けたモデルから、Djangoと共有する構造化Issueを作る。
 
-    This mirrors Django's local ``build_generation_issues`` criteria.  It is
-    intentionally kept at the API response boundary so the API exposes facts,
-    not Japanese UI messages.
-    """
+APIは日付・人数・差分などの事実だけを返し、日本語の表示文言はDjango側で決める。
+"""
 
     day_data = optimization.day_staffing_balance_data
     actual_day_counts = {
@@ -310,7 +312,7 @@ def _build_ability_target_issues(
     context: OptimizationContext,
     shifts: list[GeneratedShiftOutput],
 ) -> list[GenerationIssueResponse]:
-    """Return warning Issues when a daily ability total differs by 25% or more."""
+    """日別能力合計が期待値から25%以上ずれた場合に警告Issueを返す。"""
 
     staff_by_id = {staff.id: staff for staff in context.staff_members}
     night_eligible_staff = [
@@ -376,7 +378,7 @@ def _build_daily_ability_target_issue(
     below_code: str,
     above_code: str,
 ) -> list[GenerationIssueResponse]:
-    """Evaluate one daily ability total using integer cross multiplication."""
+    """浮動小数を避け、交差積で1日分の能力合計偏差を評価する。"""
 
     population_count = len(population)
     population_ability_total = sum(
@@ -420,12 +422,10 @@ def _build_daily_ability_target_issue(
 def _build_hard_staffing_issues(
     context: OptimizationContext,
 ) -> list[GenerationIssueResponse]:
-    """Report date-specific staffing shortages certain from fixed assignments.
+    """固定勤務だけで確定する日別の配置不足をIssueとして返す。
 
-    These checks use only assignment upper bounds, so they never guess at a
-    solver-only conflict.  More complex infeasibilities retain the generic
-    fallback response.
-    """
+Solverを解かなければ判断できない競合は推測せず、汎用INFEASIBLEへ委ねる。
+"""
 
     issues = []
     for target_date in context.month_dates:
