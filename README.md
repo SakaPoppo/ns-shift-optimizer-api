@@ -232,24 +232,3 @@ docker run --rm \
   python -m pytest -p no:cacheprovider tests
 ```
 
-## Next Step
-
-Cloud Runへデプロイし、Ns ShiftからHTTPで生成依頼を送れるようにすると、
-
-```text
-Ns Shift
-↓
-POST /generate
-↓
-Cloud Run
-↓
-OR-Tools
-↓
-生成結果JSON
-↓
-Ns Shift
-↓
-DB保存
-```
-
-までを実現します。
