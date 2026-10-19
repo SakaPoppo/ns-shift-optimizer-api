@@ -215,6 +215,14 @@ Cloud Run用の設定は [service.yaml](service.yaml) でGit管理します。�
 
 DockerfileはCloud Runの`PORT`環境変数を優先し、未設定時は`8080`で`0.0.0.0`に待ち受けます。
 
+## Lint
+
+Ruffでコードを確認します。
+
+```bash
+ruff check .
+```
+
 ## Run Tests
 
 Docker imageをビルドします。

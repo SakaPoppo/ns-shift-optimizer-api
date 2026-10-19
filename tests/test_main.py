@@ -3,10 +3,8 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-
 from fastapi.testclient import TestClient
 
-from app.context import build_optimization_context
 from app.constants import (
     SHIFT_AFTER_NIGHT,
     SHIFT_DAY,
@@ -17,6 +15,7 @@ from app.constants import (
     SHIFT_SPECIAL_LEAVE,
     SHIFT_TRAINING,
 )
+from app.context import build_optimization_context
 from app.main import app
 from app.optimization import SUCCESSFUL_OPTIMIZATION_STATUSES
 from app.results import (
@@ -24,8 +23,7 @@ from app.results import (
     _build_daily_ability_target_issue,
     _build_generation_issues,
 )
-from app.schemas import GenerateShiftRequest, GeneratedShiftOutput
-
+from app.schemas import GeneratedShiftOutput, GenerateShiftRequest
 
 client = TestClient(app)
 API_KEY = secrets.token_urlsafe(32)

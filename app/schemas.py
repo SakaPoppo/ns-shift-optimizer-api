@@ -4,9 +4,10 @@ Pydanticが型・必須項目・数値範囲を入口で検証し、context.py�
 """
 
 from datetime import date
-from pydantic import BaseModel, Field
-from .types import AbilityLevel, Weekday
 
+from pydantic import BaseModel, Field
+
+from .types import AbilityLevel, Weekday
 
 # --- Ns Shiftから受け取る生成条件 ---
 

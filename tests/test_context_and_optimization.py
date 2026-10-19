@@ -17,9 +17,9 @@ from app.context import build_optimization_context
 from app.optimization import (
     PHASE_TIME_LIMITS,
     SUCCESSFUL_OPTIMIZATION_STATUSES,
-    _new_solver,
     _build_day_ability_balance_objective,
     _log_phase_summary,
+    _new_solver,
     optimize_shift,
 )
 from app.schemas import GenerateShiftRequest

@@ -9,7 +9,6 @@ from typing import Annotated
 
 from pydantic import Field
 
-
 # API入力で検証する値の範囲。能力はLv1〜5、曜日は月曜0〜日曜6。
 AbilityLevel = Annotated[int, Field(ge=1, le=5)]
 Weekday = Annotated[int, Field(ge=0, le=6)]
