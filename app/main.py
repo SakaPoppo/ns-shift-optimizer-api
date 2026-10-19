@@ -20,7 +20,6 @@ from .schemas import (
 )
 from .types import InfeasibleOptimizationError, OptimizationError
 
-
 app = FastAPI(
     title="Ns Shift Optimizer API",
     description="Cloud Run API boundary for Ns Shift shift generation.",

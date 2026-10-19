@@ -15,13 +15,12 @@ from .constants import (
     SHIFT_NIGHT,
 )
 from .schemas import (
-    GenerationIssueResponse,
-    GenerateShiftResponse,
     GeneratedShiftOutput,
+    GenerateShiftResponse,
+    GenerationIssueResponse,
     OptimizationPhaseOutput,
 )
 from .types import OptimizationContext, OptimizationError, ShiftOptimizationOutput
-
 
 ABILITY_DEVIATION_WARNING_PERCENT = 25
 PERCENT_SCALE = 100

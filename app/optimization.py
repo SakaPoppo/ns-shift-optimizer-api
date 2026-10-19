@@ -18,8 +18,8 @@ import os
 from ortools.sat.python import cp_model
 
 from .constants import (
-    GENERATABLE_SHIFT_TYPES,
     FIXED_NON_GENERATED_MONTHLY_OFF_SHIFT_TYPES,
+    GENERATABLE_SHIFT_TYPES,
     MONTHLY_OFF_SHIFT_TYPES,
     OFF_LIKE_SHIFT_TYPES,
     ROLE_LEADER,
@@ -28,22 +28,20 @@ from .constants import (
     SHIFT_NIGHT,
     SHIFT_OFF,
     SHIFT_OFF_REQUEST,
-    SHIFT_TRAINING,
     WORKLIKE_SHIFT_TYPES,
 )
 from .types import (
     DayAbilityBalanceData,
     DayStaffingBalanceData,
     InfeasibleOptimizationError,
-    NightCountBalanceData,
     NightAbilityBalanceData,
+    NightCountBalanceData,
     OptimizationContext,
     OptimizationError,
     OptimizationPhaseDefinition,
     OptimizationPhaseResult,
     ShiftOptimizationOutput,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -592,7 +590,6 @@ def _add_night_pattern_constraints(
         for index, target_date in enumerate(month_dates):
             current_key = (staff_member.id, target_date)
             night_var = shift_vars[current_key][SHIFT_NIGHT]
-            fixed_shift_type = fixed_assignments.get(current_key)
 
             if index + 1 >= len(month_dates):
                 continue
