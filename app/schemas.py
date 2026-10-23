@@ -104,6 +104,29 @@ class OptimizationPhaseOutput(BaseModel):
     status: str
     objective_value: int | None
     optimal: bool
+    time_limit_seconds: float | None = None
+    wall_time_seconds: float | None = None
+    best_objective_bound: float | None = None
+    branches: int | None = None
+    conflicts: int | None = None
+    solution_found: bool = False
+
+
+class RuntimeMetricsOutput(BaseModel):
+    """1リクエストのAPI内部計測値と実行条件。"""
+
+    internal_elapsed_seconds: float
+    context_build_seconds: float
+    model_build_seconds: float | None = None
+    result_build_seconds: float
+    cpu_time_seconds: float
+    cpu_percent: float | None = None
+    peak_memory_mb: float | None = None
+    logical_cpu_count: int | None = None
+    cpu_limit: float | None = None
+    ortools_version: str
+    num_search_workers: int
+    solver_seed: int
 
 
 class GenerationIssueResponse(BaseModel):
@@ -122,3 +145,4 @@ class GenerateShiftResponse(BaseModel):
     shifts: list[GeneratedShiftOutput]
     phase_results: list[OptimizationPhaseOutput]
     issues: list[GenerationIssueResponse]
+    metrics: RuntimeMetricsOutput | None = None

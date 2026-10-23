@@ -126,7 +126,21 @@ docker compose up --build
 
 `http://localhost:8080/health` でヘルスチェック、`http://localhost:8080/docs` でSwagger UIを開けます。
 
-ComposeではAPIコンテナを2 CPUに制限し、`ORTOOLS_NUM_SEARCH_WORKERS=2` をOR-Toolsへ渡します。Uvicornは1プロセスで動作し、`app/` をマウントして `--reload` で起動するため、Pythonコードの保存後はイメージを再buildせず自動再起動します。`requirements.txt` またはDockerfileを変更した場合だけ `docker compose up --build` を実行してください。
+Composeでは既定でAPIコンテナを2 CPUに制限し、`ORTOOLS_NUM_SEARCH_WORKERS=2`、`ORTOOLS_RANDOM_SEED=1` をOR-Toolsへ渡します。`.env` の次の値を変更してコンテナを再作成すると、CPU上限とworker数を指定できます。
+
+```dotenv
+OPTIMIZER_CPU_LIMIT=1.0
+ORTOOLS_NUM_SEARCH_WORKERS=1
+ORTOOLS_RANDOM_SEED=1
+```
+
+```bash
+docker compose up -d --force-recreate
+```
+
+CPU上限はコンテナ単位、worker数はAPIプロセス単位の設定です。`POST /generate` のリクエストごとに変更はできません。Cloud Runでは `service.yaml` のCPU limitと各環境変数を同じ値にしてデプロイします。
+
+Uvicornは1プロセスで動作し、`app/` をマウントして `--reload` で起動するため、Pythonコードの保存後はイメージを再buildせず自動再起動します。`requirements.txt` またはDockerfileを変更した場合だけ `docker compose up --build` を実行してください。
 
 開発時の接続経路は以下です。
 
@@ -189,11 +203,33 @@ Ns Shiftのシフト生成用payloadを受け取り、最適化済みのシフ�
       "name": "night_count_balance",
       "status": "OPTIMAL",
       "objective_value": 0,
-      "optimal": true
+      "optimal": true,
+      "time_limit_seconds": 40.0,
+      "wall_time_seconds": 0.7,
+      "best_objective_bound": 0.0,
+      "branches": 6200,
+      "conflicts": 1,
+      "solution_found": true
     }
-  ]
+  ],
+  "metrics": {
+    "internal_elapsed_seconds": 87.2,
+    "context_build_seconds": 0.001,
+    "model_build_seconds": 0.072,
+    "result_build_seconds": 0.005,
+    "cpu_time_seconds": 173.5,
+    "cpu_percent": 198.9,
+    "peak_memory_mb": 188.1,
+    "logical_cpu_count": 8,
+    "cpu_limit": 2.0,
+    "ortools_version": "9.15.6755",
+    "num_search_workers": 2,
+    "solver_seed": 1
+  }
 }
 ```
+
+`metrics`は既存クライアントとの互換性を保つ追加フィールドです。フェーズ時間とAPI内部時間は単調時計で計測します。CPU使用率は複数CPUを使用すると100%を超え、ピークメモリはAPIプロセス生存期間の最大RSSを示します。
 
 入力内のスタッフID・対象日・日別ルール・休日数が整合しない場合や、固定条件が成立しない場合は、HTTP 422と日本語の説明を返します。
 

@@ -162,6 +162,12 @@ class OptimizationPhaseResult:
     objective_value: int | None
     optimal: bool
     solver: object | None
+    time_limit_seconds: float | None = None
+    wall_time_seconds: float | None = None
+    best_objective_bound: float | None = None
+    branches: int | None = None
+    conflicts: int | None = None
+    solution_found: bool = False
 
 
 @dataclass(frozen=True)
@@ -175,6 +181,7 @@ class ShiftOptimizationOutput:
     night_count_balance_data: NightCountBalanceData
     long_streak_terms: list
     phase_results: list[OptimizationPhaseResult]
+    model_build_seconds: float
 
 
 class OptimizationError(Exception):

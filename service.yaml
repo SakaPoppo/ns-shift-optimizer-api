@@ -31,3 +31,7 @@ spec:
                   key: latest
             - name: ORTOOLS_NUM_SEARCH_WORKERS
               value: "2"
+            - name: ORTOOLS_RANDOM_SEED
+              value: "1"
+            - name: OPTIMIZER_CPU_LIMIT
+              value: "2"
