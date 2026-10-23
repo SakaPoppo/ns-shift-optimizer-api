@@ -39,10 +39,12 @@ def test_each_optimization_phase_has_a_fixed_40_second_limit() -> None:
 
 def test_solver_uses_ortools_worker_count_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("ORTOOLS_NUM_SEARCH_WORKERS", "2")
+    monkeypatch.setenv("ORTOOLS_RANDOM_SEED", "7")
 
     solver = _new_solver(max_time_seconds=40)
 
     assert solver.parameters.num_search_workers == 2
+    assert solver.parameters.random_seed == 7
 
 
 def make_request(

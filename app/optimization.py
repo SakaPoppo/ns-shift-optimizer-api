@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
-import os
+import time
 
 from ortools.sat.python import cp_model
 
@@ -30,6 +30,7 @@ from .constants import (
     SHIFT_OFF_REQUEST,
     WORKLIKE_SHIFT_TYPES,
 )
+from .runtime_metrics import configured_solver_seed, configured_worker_count
 from .types import (
     DayAbilityBalanceData,
     DayStaffingBalanceData,
@@ -66,6 +67,7 @@ SUCCESSFUL_OPTIMIZATION_STATUSES = {"OPTIMAL", "FEASIBLE"}
 def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
     """読み込み済みコンテキストから制約モデルを作り、優先順に最適化する。"""
 
+    model_started_at = time.perf_counter()
     # 1人・1日・1勤務の選択肢と、固定勤務の土台を作る。
     model = cp_model.CpModel()
     shift_vars = _build_shift_variables(
@@ -192,6 +194,7 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
             for phase in phase_definitions
         },
     )
+    model_build_seconds = time.perf_counter() - model_started_at
     phase_results, solver, solver_status = _run_optimization_phases(
         model=model,
         shift_vars=shift_vars,
@@ -210,6 +213,7 @@ def optimize_shift(context: OptimizationContext) -> ShiftOptimizationOutput:
         night_count_balance_data=night_count_balance_data,
         long_streak_terms=long_streak_terms,
         phase_results=phase_results,
+        model_build_seconds=model_build_seconds,
     )
 
 
@@ -346,6 +350,7 @@ def _run_optimization_phases(
                     objective_value=None,
                     optimal=False,
                     solver=None,
+                    time_limit_seconds=remaining_phase.max_time_seconds,
                 )
                 for remaining_phase in phase_definitions[phase_index + 1 :]
             )
@@ -399,11 +404,15 @@ def _log_phase_summary(phase_results: list[OptimizationPhaseResult]) -> None:
     logger.info("optimization phase summary")
     for phase in phase_results:
         logger.info(
-            "optimization phase name=%s status=%s optimal=%s objective_value=%s",
+            "optimization phase name=%s status=%s optimal=%s "
+            "objective_value=%s wall_time_seconds=%s branches=%s conflicts=%s",
             phase.name,
             phase.status,
             phase.optimal,
             phase.objective_value,
+            phase.wall_time_seconds,
+            phase.branches,
+            phase.conflicts,
         )
     logger.info(
         "optimization non_optimal_phases=%s",
@@ -414,9 +423,8 @@ def _log_phase_summary(phase_results: list[OptimizationPhaseResult]) -> None:
 def _new_solver(max_time_seconds: int) -> cp_model.CpSolver:
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = max_time_seconds
-    solver.parameters.num_search_workers = int(
-        os.environ.get("ORTOOLS_NUM_SEARCH_WORKERS", "8")
-    )
+    solver.parameters.num_search_workers = configured_worker_count()
+    solver.parameters.random_seed = configured_solver_seed()
     return solver
 
 
@@ -428,17 +436,19 @@ def _solve_and_fix_objective(
     model.Minimize(objective)
     solver = _new_solver(max_time_seconds)
     logger.info(
-    "shift optimization phase started phase=%s limit=%ss",
-    phase_name,
-    max_time_seconds,
-)
+        "shift optimization phase started phase=%s limit=%ss",
+        phase_name,
+        max_time_seconds,
+    )
+    phase_started_at = time.perf_counter()
     status = solver.Solve(model)
+    wall_time_seconds = time.perf_counter() - phase_started_at
     status_name = solver.StatusName(status)
     logger.info(
         "shift optimization phase=%s status=%s elapsed=%.3fs limit=%ss",
         phase_name,
         status_name,
-        solver.WallTime(),
+        wall_time_seconds,
         max_time_seconds,
     )
     if status == cp_model.UNKNOWN:
@@ -449,6 +459,12 @@ def _solve_and_fix_objective(
             objective_value=None,
             optimal=False,
             solver=None,
+            time_limit_seconds=max_time_seconds,
+            wall_time_seconds=wall_time_seconds,
+            best_objective_bound=solver.BestObjectiveBound(),
+            branches=solver.NumBranches(),
+            conflicts=solver.NumConflicts(),
+            solution_found=False,
         )
     if status == cp_model.INFEASIBLE:
         raise InfeasibleOptimizationError()
@@ -463,6 +479,12 @@ def _solve_and_fix_objective(
         objective_value=objective_value,
         optimal=status == cp_model.OPTIMAL,
         solver=solver,
+        time_limit_seconds=max_time_seconds,
+        wall_time_seconds=wall_time_seconds,
+        best_objective_bound=solver.BestObjectiveBound(),
+        branches=solver.NumBranches(),
+        conflicts=solver.NumConflicts(),
+        solution_found=True,
     )
 
 

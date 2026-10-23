@@ -64,6 +64,12 @@ def build_generate_shift_response(
                 status=phase.status,
                 objective_value=phase.objective_value,
                 optimal=phase.optimal,
+                time_limit_seconds=phase.time_limit_seconds,
+                wall_time_seconds=phase.wall_time_seconds,
+                best_objective_bound=phase.best_objective_bound,
+                branches=phase.branches,
+                conflicts=phase.conflicts,
+                solution_found=phase.solution_found,
             )
             for phase in optimization.phase_results
         ],

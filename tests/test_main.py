@@ -124,6 +124,23 @@ def test_generate_returns_serializable_optimization_result() -> None:
         "long_streak",
     }
     assert all("solver" not in phase for phase in body["phase_results"])
+    assert all(phase["time_limit_seconds"] == 40 for phase in body["phase_results"])
+    assert all(phase["wall_time_seconds"] >= 0 for phase in body["phase_results"])
+    assert all(phase["branches"] >= 0 for phase in body["phase_results"])
+    assert all(phase["conflicts"] >= 0 for phase in body["phase_results"])
+    assert all(phase["solution_found"] for phase in body["phase_results"])
+    metrics = body["metrics"]
+    assert metrics["internal_elapsed_seconds"] >= 0
+    assert metrics["context_build_seconds"] >= 0
+    assert metrics["model_build_seconds"] >= 0
+    assert metrics["result_build_seconds"] >= 0
+    assert metrics["cpu_time_seconds"] >= 0
+    assert metrics["cpu_percent"] >= 0
+    assert metrics["peak_memory_mb"] > 0
+    assert metrics["logical_cpu_count"] >= 1
+    assert metrics["ortools_version"]
+    assert metrics["num_search_workers"] >= 1
+    assert metrics["solver_seed"] >= 0
     assert body["issues"][0] == {
         "code": "SHIFT_GENERATED",
         "severity": "success",
@@ -492,7 +509,11 @@ def test_generate_returns_infeasible_result_for_unsatisfiable_conditions() -> No
     )
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    metrics = body.pop("metrics")
+    assert metrics["internal_elapsed_seconds"] >= 0
+    assert metrics["model_build_seconds"] is None
+    assert body == {
         "status": "infeasible",
         "solver_status": "INFEASIBLE",
         "shifts": [],
